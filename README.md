@@ -179,6 +179,17 @@ npm run check
 
 新增插件类型时，请为它设计独立的数据结构和配置表单；不要复用仓库插件表单来表达无关能力。涉及上报兼容性时，应基于实际 Git AI 版本和请求路径验证，避免把“页面可配置”误写成“运行时已接管”。
 
+## 发布
+
+项目只发布一个跨平台 npm 包，不分别生成 macOS、Linux 或 Windows 安装包。推送与 `package.json` 版本一致的 Git 标签后，GitHub Actions 会：
+
+1. 在 macOS、Ubuntu 和 Windows 上检查同一份安装器与运行时源码；
+2. 在 Ubuntu 上只构建一次前端静态资源；
+3. 确认构建产物与仓库内容一致；
+4. 通过 npm Trusted Publishing（OIDC）发布到 npmjs.com。
+
+发布工作流不使用长期 npm Access Token。npm 包需要将 `.github/workflows/publish.yml` 配置为可信发布者。
+
 ## 安全边界
 
 - Web 服务只绑定本机回环地址；

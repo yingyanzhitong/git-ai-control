@@ -42,6 +42,7 @@ for (const file of [
   "scripts/install.mjs",
   "scripts/platform-services.mjs",
   "scripts/uninstall.mjs",
+  "scripts/verify-release.mjs",
 ]) {
   if (!run(process.execPath, ["--check", file])) {
     process.exit(1)

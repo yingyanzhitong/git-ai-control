@@ -2,6 +2,19 @@
 
 本项目的所有重要变更都会记录在此文件中。
 
+## [0.4.0] - 2026-07-30
+
+### 新增
+
+- 新增 Git 标签触发的 npm Trusted Publishing 工作流；
+- 发布前在 macOS、Linux 和 Windows 上验证同一份源码，并校验标签与 `package.json` 版本一致；
+- npm 发布使用 GitHub Actions OIDC 短期凭据，不再需要长期 npm Access Token。
+
+### 变更
+
+- 前端静态资源在每个工作流中只构建一次，三平台矩阵只验证平台相关运行时；
+- GitHub Actions 升级到 Node.js 24 运行时版本。
+
 ## [0.3.1] - 2026-07-30
 
 ### 修复

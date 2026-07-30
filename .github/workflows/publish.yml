@@ -1,0 +1,60 @@
+name: publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  cross-platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - run: npm run check
+
+  build-and-publish:
+    needs: cross-platform
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org/
+          package-manager-cache: false
+      - name: Verify release version
+        run: node scripts/verify-release.mjs "${GITHUB_REF_NAME}"
+      - name: Install frontend dependencies
+        working-directory: frontend/git-ai-control-panel
+        run: npm ci
+      - name: Check frontend
+        working-directory: frontend/git-ai-control-panel
+        run: npm run lint
+      - name: Build frontend once
+        working-directory: frontend/git-ai-control-panel
+        run: npm run build
+      - name: Verify committed frontend build
+        run: git diff --exit-code -- static
+      - name: Publish to npm
+        run: npm publish
