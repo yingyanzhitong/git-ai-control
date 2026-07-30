@@ -1,5 +1,6 @@
 {
-  "version": 1,
+  "version": 2,
+  "git_ai_enabled": true,
   "default_allow_unmatched": true,
   "skill_policy": {
     "installed": true,
@@ -28,10 +29,13 @@
       "id": "github",
       "name": "GitHub 仓库",
       "enabled": true,
+      "priority": 100,
       "match": {
-        "hosts": [
-          "github.com"
-        ]
+        "all_repositories": false,
+        "hosts": ["github.com"],
+        "repositories": [],
+        "directories": [],
+        "branches": []
       },
       "fixed_project_directory": "",
       "allow": {
@@ -49,5 +53,39 @@
         "repository": false
       }
     }
-  ]
+  ],
+  "plugin_order": [
+    "repository:github",
+    "skill_filter"
+  ],
+  "sensitive_data_policy": {
+    "installed": false,
+    "enabled": false,
+    "action": "redact",
+    "event_types": {
+      "agent": true,
+      "checkpoint": true,
+      "commit": true,
+      "prompt_duration": true,
+      "prompt_report": true,
+      "skill": true,
+      "token": true
+    },
+    "built_in_rules": {
+      "api_key": true,
+      "credential": true,
+      "email": false,
+      "phone": false,
+      "private_key": true
+    },
+    "custom_patterns": []
+  },
+  "agent_model_policy": {
+    "installed": false,
+    "enabled": false,
+    "mode": "audit",
+    "allowed_agents": [],
+    "allowed_models": [],
+    "blocked_patterns": []
+  }
 }

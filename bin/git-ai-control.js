@@ -5,6 +5,7 @@ import path from "node:path"
 import {fileURLToPath} from "node:url"
 
 import {browserCommand} from "../scripts/platform-services.mjs"
+import {controlPanelIsRunning} from "../scripts/install.mjs"
 
 const command = process.argv[2]
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
@@ -14,17 +15,17 @@ function printHelp() {
   console.log(`Git AI Control Panel
 
 用法：
-  git-ai-control start    安装或更新本机服务，并打开配置页面
+  git-ai-control          首次安装服务；已运行时复用现有进程并打开配置页面
   git-ai-control uninstall 卸载本机服务并恢复上报端点
   git-ai-control --help   显示帮助`)
 }
 
-if (command === "--help" || command === "-h" || !command) {
+if (command === "--help" || command === "-h") {
   printHelp()
   process.exit(0)
 }
 
-if (!["start", "uninstall"].includes(command)) {
+if (command && command !== "uninstall") {
   console.error(`未知命令：${command}`)
   printHelp()
   process.exit(1)
@@ -36,10 +37,15 @@ try {
     await uninstall()
     process.exit(0)
   }
-  const {install} = await import("../scripts/install.mjs")
-  await install()
+  const reused = await controlPanelIsRunning()
+  if (!reused) {
+    const {install} = await import("../scripts/install.mjs")
+    await install()
+  } else {
+    console.log("检测到已运行的 Git AI 配置中心，复用现有进程")
+  }
 } catch (error) {
-  console.error(`${command === "start" ? "安装" : "卸载"}失败：${error.message}`)
+  console.error(`${command === "uninstall" ? "卸载" : "启动"}失败：${error.message}`)
   process.exit(1)
 }
 

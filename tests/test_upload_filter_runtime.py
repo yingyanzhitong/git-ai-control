@@ -1,0 +1,126 @@
+import importlib.util
+import unittest
+from pathlib import Path
+
+
+RUNTIME_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "plugins"
+    / "upload-filter"
+    / "plugin_filter_runtime.py"
+)
+SPEC = importlib.util.spec_from_file_location("plugin_filter_runtime", RUNTIME_PATH)
+RUNTIME = importlib.util.module_from_spec(SPEC)
+assert SPEC and SPEC.loader
+SPEC.loader.exec_module(RUNTIME)
+
+
+class UploadFilterRuntimeTests(unittest.TestCase):
+    def test_pause_blocks_all_known_git_ai_events_before_plugin_rules(self):
+        policy = RUNTIME.clone_default_policy()
+        policy["git_ai_enabled"] = False
+
+        decision = RUNTIME.evaluate_request(
+            "/token-usage",
+            {"repository": "github.com/example/private-repository"},
+            config=policy,
+        )
+
+        self.assertTrue(decision["blocked"])
+        self.assertEqual(decision["reason"], "git_ai_paused")
+
+    def test_legacy_policy_without_global_state_remains_enabled(self):
+        policy = RUNTIME.clone_default_policy()
+        policy.pop("git_ai_enabled")
+
+        decision = RUNTIME.evaluate_request(
+            "/token-usage",
+            {"repository": "gitlab.example.com/example/project"},
+            config=policy,
+        )
+
+        self.assertFalse(decision["blocked"])
+
+    def test_specific_repository_rule_wins_over_global_rule(self):
+        policy = RUNTIME.clone_default_policy()
+        global_rule = {
+            **policy["plugins"][0],
+            "id": "global",
+            "match": {
+                "all_repositories": True,
+                "hosts": [],
+                "repositories": [],
+                "directories": [],
+                "branches": [],
+            },
+            "priority": 1000,
+            "allow": {**policy["plugins"][0]["allow"], "token": False},
+        }
+        specific_rule = {
+            **policy["plugins"][0],
+            "id": "github-main",
+            "priority": 1,
+            "match": {
+                "all_repositories": False,
+                "hosts": ["github.com"],
+                "repositories": [],
+                "directories": [],
+                "branches": ["main"],
+            },
+            "allow": {**policy["plugins"][0]["allow"], "token": True},
+        }
+        policy["plugins"] = [global_rule, specific_rule]
+
+        decision = RUNTIME.evaluate_request(
+            "/token-usage",
+            {"repository": "github.com/example/project", "branch": "main"},
+            config=policy,
+        )
+
+        self.assertFalse(decision["blocked"])
+        self.assertEqual(decision["plugin"], "github-main")
+
+    def test_sensitive_content_is_redacted_before_forwarding(self):
+        policy = RUNTIME.clone_default_policy()
+        policy["plugins"] = []
+        policy["sensitive_data_policy"] = {
+            **policy["sensitive_data_policy"],
+            "installed": True,
+            "enabled": True,
+            "event_types": {**policy["sensitive_data_policy"]["event_types"], "agent": True},
+        }
+
+        decision = RUNTIME.evaluate_request(
+            "/agent-usage",
+            {"note": "password=super-secret-value", "agent": "codex"},
+            config=policy,
+        )
+
+        self.assertFalse(decision["blocked"])
+        self.assertIn("[已脱敏:credential]", decision["payload"]["note"])
+        self.assertEqual(decision["findings"]["sensitive"], ["credential"])
+
+    def test_agent_model_block_mode_rejects_unapproved_values(self):
+        policy = RUNTIME.clone_default_policy()
+        policy["plugins"] = []
+        policy["agent_model_policy"] = {
+            **policy["agent_model_policy"],
+            "installed": True,
+            "enabled": True,
+            "mode": "block",
+            "allowed_agents": ["codex"],
+            "allowed_models": ["gpt-5*"],
+        }
+
+        decision = RUNTIME.evaluate_request(
+            "/agent-usage",
+            {"agentName": "unknown-agent", "model": "other-model"},
+            config=policy,
+        )
+
+        self.assertTrue(decision["blocked"])
+        self.assertEqual(decision["reason"], "agent_model_policy")
+        self.assertEqual(decision["findings"], ["unapproved_agent", "unapproved_model"])
+
+if __name__ == "__main__":
+    unittest.main()

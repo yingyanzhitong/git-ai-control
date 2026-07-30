@@ -10,6 +10,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from fnmatch import fnmatchcase
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -86,10 +87,26 @@ BRANCH_KEYS = {
     "baseref",
 }
 NORMALIZED_PATH_KEYS = {re.sub(r"[^a-z0-9]", "", key.lower()) for key in PATH_KEYS}
+AGENT_KEYS = {"agent", "agentname", "agentid", "agenttype", "tool", "toolname"}
+MODEL_KEYS = {"model", "modelname", "modelid", "llmmodel"}
+SENSITIVE_PATTERNS = {
+    "api_key": re.compile(
+        r"(?i)\b(?:sk|rk|ghp|github_pat|glpat|xox[baprs]|akia)[a-z0-9_=-]{12,}\b"
+    ),
+    "private_key": re.compile(
+        r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"
+    ),
+    "credential": re.compile(
+        r"(?i)\b(?:password|passwd|secret|api[_-]?key)\s*[:=]\s*([^\s,;\]\}]{4,})"
+    ),
+    "email": re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b"),
+    "phone": re.compile(r"(?<!\d)(?:\+?\d[\s-]?){7,14}\d(?!\d)"),
+}
 DROP = object()
 
 DEFAULT_POLICY_CONFIG = {
-    "version": 1,
+    "version": 2,
+    "git_ai_enabled": True,
     "default_allow_unmatched": True,
     "skill_policy": {
         "installed": True,
@@ -120,7 +137,14 @@ DEFAULT_POLICY_CONFIG = {
             "id": "github",
             "name": "GitHub 仓库",
             "enabled": True,
-            "match": {"hosts": ["github.com"]},
+            "priority": 100,
+            "match": {
+                "all_repositories": False,
+                "hosts": ["github.com"],
+                "repositories": [],
+                "directories": [],
+                "branches": [],
+            },
             "fixed_project_directory": "",
             "allow": {
                 "token": False,
@@ -138,6 +162,37 @@ DEFAULT_POLICY_CONFIG = {
             },
         }
     ],
+    "plugin_order": ["repository:github", "skill_filter"],
+    "sensitive_data_policy": {
+        "installed": False,
+        "enabled": False,
+        "action": "redact",
+        "event_types": {
+            "token": True,
+            "skill": True,
+            "commit": True,
+            "checkpoint": True,
+            "agent": True,
+            "prompt_duration": True,
+            "prompt_report": True,
+        },
+        "built_in_rules": {
+            "api_key": True,
+            "private_key": True,
+            "credential": True,
+            "email": False,
+            "phone": False,
+        },
+        "custom_patterns": [],
+    },
+    "agent_model_policy": {
+        "installed": False,
+        "enabled": False,
+        "mode": "audit",
+        "allowed_agents": [],
+        "allowed_models": [],
+        "blocked_patterns": [],
+    },
 }
 
 
@@ -226,6 +281,42 @@ def iter_path_text(value):
             yield from iter_path_text(child)
 
 
+def iter_repository_text(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if is_repository_key(key):
+                yield from iter_all_text(child)
+            else:
+                yield from iter_repository_text(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from iter_repository_text(child)
+
+
+def iter_branch_text(value):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if is_branch_key(key):
+                yield from iter_all_text(child)
+            else:
+                yield from iter_branch_text(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from iter_branch_text(child)
+
+
+def iter_named_text(value, keys: set[str]):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if normalize_key(key) in keys:
+                yield from iter_all_text(child)
+            else:
+                yield from iter_named_text(child, keys)
+    elif isinstance(value, list):
+        for child in value:
+            yield from iter_named_text(child, keys)
+
+
 def read_remote_text(path: str) -> str:
     if not isinstance(path, str) or not path:
         return ""
@@ -255,7 +346,7 @@ def load_policy_config() -> tuple[dict, str]:
     try:
         with POLICY_CONFIG_PATH.open("r", encoding="utf-8") as handle:
             config = json.load(handle)
-        if not isinstance(config, dict) or config.get("version") != 1:
+        if not isinstance(config, dict) or config.get("version") not in {1, 2}:
             raise ValueError("unsupported policy version")
         if not isinstance(config.get("plugins"), list):
             raise ValueError("plugins must be a list")
@@ -273,24 +364,59 @@ def host_needles(plugin: dict) -> list[str]:
     ]
 
 
-def plugin_matches(plugin: dict, payload, raw_body: bytes) -> bool:
-    needles = host_needles(plugin)
-    if not needles:
+def selector_matches(pattern: str, candidates) -> bool:
+    normalized_pattern = str(pattern).strip().lower()
+    if not normalized_pattern:
         return False
-    raw_text = raw_body.decode("utf-8", errors="ignore").lower()
-    if any(needle in raw_text for needle in needles):
-        return True
-    if any(needle in text.lower() for text in iter_all_text(payload) for needle in needles):
-        return True
-    for path in iter_path_text(payload):
-        remote_text = read_remote_text(path).lower()
-        if any(needle in remote_text for needle in needles):
+    for candidate in candidates:
+        normalized_candidate = str(candidate).lower()
+        if fnmatchcase(normalized_candidate, normalized_pattern):
+            return True
+        if "*" not in normalized_pattern and "?" not in normalized_pattern and normalized_pattern in normalized_candidate:
             return True
     return False
 
 
+def selectors_match(patterns, candidates) -> bool:
+    if not patterns:
+        return True
+    return any(selector_matches(pattern, candidates) for pattern in patterns)
+
+
+def plugin_matches(plugin: dict, payload, raw_body: bytes) -> bool:
+    match = plugin.get("match", {})
+    if match.get("all_repositories", False):
+        return True
+    needles = host_needles(plugin)
+    repositories = match.get("repositories", [])
+    directories = match.get("directories", [])
+    branches = match.get("branches", [])
+    if not any((needles, repositories, directories, branches)):
+        return False
+    raw_text = raw_body.decode("utf-8", errors="ignore").lower()
+    path_values = list(iter_path_text(payload))
+    remote_values = [read_remote_text(path) for path in path_values]
+    host_values = [raw_text, *iter_all_text(payload), *remote_values]
+    repository_values = [*iter_repository_text(payload), *remote_values]
+    return (
+        selectors_match(needles, host_values)
+        and selectors_match(repositories, repository_values)
+        and selectors_match(directories, path_values)
+        and selectors_match(branches, iter_branch_text(payload))
+    )
+
+
+def plugin_sort_key(item) -> tuple[int, int, int]:
+    index, plugin = item
+    match = plugin.get("match", {})
+    global_rule = bool(match.get("all_repositories", False))
+    priority = plugin.get("priority", 100)
+    return (1 if global_rule else 0, -priority if isinstance(priority, int) else -100, index)
+
+
 def find_matching_plugin(config: dict, payload, raw_body: bytes) -> dict | None:
-    for plugin in config.get("plugins", []):
+    plugins = sorted(enumerate(config.get("plugins", [])), key=plugin_sort_key)
+    for _, plugin in plugins:
         if plugin.get("enabled", True) and plugin_matches(plugin, payload, raw_body):
             return plugin
     return None
@@ -353,6 +479,73 @@ def sanitize_fields(value, fields: dict, hosts: list[str]):
     return value
 
 
+def sensitive_policy_matches(policy: dict, event_type: str | None) -> bool:
+    return bool(
+        policy.get("installed", False)
+        and policy.get("enabled", False)
+        and policy.get("event_types", {}).get(event_type, False)
+    )
+
+
+def redact_sensitive_content(value, policy: dict) -> tuple[object, list[str]]:
+    patterns = [
+        (name, pattern)
+        for name, pattern in SENSITIVE_PATTERNS.items()
+        if policy.get("built_in_rules", {}).get(name, False)
+    ]
+    for index, source in enumerate(policy.get("custom_patterns", []), start=1):
+        try:
+            patterns.append((f"custom_{index}", re.compile(str(source), re.IGNORECASE)))
+        except re.error:
+            continue
+
+    findings: list[str] = []
+
+    def clean(current):
+        if isinstance(current, dict):
+            return {key: clean(child) for key, child in current.items()}
+        if isinstance(current, list):
+            return [clean(child) for child in current]
+        if not isinstance(current, str):
+            return current
+        sanitized = current
+        for name, pattern in patterns:
+            sanitized, count = pattern.subn(f"[已脱敏:{name}]", sanitized)
+            if count:
+                findings.append(name)
+        return sanitized
+
+    return clean(value), sorted(set(findings))
+
+
+def matches_allowlist(value: str, patterns) -> bool:
+    return any(selector_matches(pattern, [value]) for pattern in patterns)
+
+
+def governance_findings(payload, policy: dict) -> list[str]:
+    if not policy.get("installed", False) or not policy.get("enabled", False):
+        return []
+    agents = sorted(set(iter_named_text(payload, AGENT_KEYS)))
+    models = sorted(set(iter_named_text(payload, MODEL_KEYS)))
+    compiled_patterns = []
+    for source in policy.get("blocked_patterns", []):
+        try:
+            compiled_patterns.append(re.compile(str(source), re.IGNORECASE))
+        except re.error:
+            continue
+    findings = []
+    for label, values, allowlist in (
+        ("agent", agents, policy.get("allowed_agents", [])),
+        ("model", models, policy.get("allowed_models", [])),
+    ):
+        for value in values:
+            if any(pattern.search(value) for pattern in compiled_patterns):
+                findings.append(f"blocked_{label}")
+            elif allowlist and not matches_allowlist(value, allowlist):
+                findings.append(f"unapproved_{label}")
+    return sorted(set(findings))
+
+
 def evaluate_request(
     endpoint_path: str,
     payload,
@@ -366,6 +559,14 @@ def evaluate_request(
     if raw_body is None:
         raw_body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     event_type = EVENT_TYPES.get(endpoint_path)
+    if not config.get("git_ai_enabled", True):
+        return {
+            "blocked": True,
+            "reason": "git_ai_paused",
+            "payload": payload,
+            "plugin": None,
+            "config_error": config_error,
+        }
     plugin = find_matching_plugin(config, payload, raw_body)
     plugin_id = plugin.get("id") if plugin else None
 
@@ -419,12 +620,46 @@ def evaluate_request(
                 "config_error": config_error,
             }
 
+    sensitive_findings: list[str] = []
+    sensitive_policy = config.get("sensitive_data_policy", {})
+    if sensitive_policy_matches(sensitive_policy, event_type):
+        transformed, sensitive_findings = redact_sensitive_content(
+            transformed, sensitive_policy
+        )
+        if sensitive_findings and sensitive_policy.get("action") == "block":
+            return {
+                "blocked": True,
+                "reason": "sensitive_content",
+                "payload": payload,
+                "plugin": plugin_id,
+                "config_error": config_error,
+                "findings": sensitive_findings,
+            }
+
+    governance_findings_list = governance_findings(
+        transformed, config.get("agent_model_policy", {})
+    )
+    agent_model_policy = config.get("agent_model_policy", {})
+    if governance_findings_list and agent_model_policy.get("mode") == "block":
+        return {
+            "blocked": True,
+            "reason": "agent_model_policy",
+            "payload": payload,
+            "plugin": plugin_id,
+            "config_error": config_error,
+            "findings": governance_findings_list,
+        }
+
     return {
         "blocked": False,
         "reason": "",
         "payload": transformed,
         "plugin": plugin_id,
         "config_error": config_error,
+        "findings": {
+            "sensitive": sensitive_findings,
+            "agent_model": governance_findings_list,
+        },
     }
 
 
@@ -450,6 +685,10 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "ok": not bool(config_error or upstream_error),
                     "mode": "plugins",
+                    "gitAiEnabled": config.get("git_ai_enabled", True),
+                    "gitAiStatus": "enabled"
+                    if config.get("git_ai_enabled", True)
+                    else "paused",
                     "policyVersion": config.get("version"),
                     "plugins": [
                         plugin.get("id")
@@ -466,15 +705,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         endpoint_path = urlsplit(self.path).path
-        upstreams, upstream_error = load_upstreams()
-        if upstream_error:
-            self.send_json(
-                503,
-                {"code": -1, "data": None, "message": upstream_error},
-            )
-            return
-        upstream_url = upstreams.get(endpoint_path)
-        if not upstream_url:
+        if endpoint_path not in EVENT_TYPES:
             self.send_json(404, {"code": -1, "data": None, "message": "unknown endpoint"})
             return
 
@@ -489,6 +720,18 @@ class Handler(BaseHTTPRequestHandler):
         decision = evaluate_request(endpoint_path, payload, body)
         if decision["blocked"]:
             self.send_filtered(endpoint_path, decision["reason"], decision.get("plugin"))
+            return
+
+        upstreams, upstream_error = load_upstreams()
+        if upstream_error:
+            self.send_json(
+                503,
+                {"code": -1, "data": None, "message": upstream_error},
+            )
+            return
+        upstream_url = upstreams.get(endpoint_path)
+        if not upstream_url:
+            self.send_json(404, {"code": -1, "data": None, "message": "unknown endpoint"})
             return
 
         body = json.dumps(

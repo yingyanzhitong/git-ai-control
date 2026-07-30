@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
+import JsonView from "@uiw/react-json-view"
+import { lightTheme } from "@uiw/react-json-view/light"
 import {
   Activity,
+  Bot,
   CircleCheck,
   FlaskConical,
   FolderGit2,
@@ -11,6 +14,7 @@ import {
   Puzzle,
   RefreshCw,
   Save,
+  ShieldAlert,
   Settings2,
   ShieldCheck,
   Trash2,
@@ -93,14 +97,40 @@ type RepositoryPlugin = {
   id: string
   name: string
   enabled: boolean
-  match: { hosts: string[] }
+  priority: number
+  match: {
+    all_repositories: boolean
+    hosts: string[]
+    repositories: string[]
+    directories: string[]
+    branches: string[]
+  }
   fixed_project_directory: string
   allow: Record<EventKey, boolean>
   fields: Record<FieldKey, boolean>
 }
 
+type SensitiveDataPolicy = {
+  installed: boolean
+  enabled: boolean
+  action: "redact" | "block"
+  event_types: Record<EventKey, boolean>
+  built_in_rules: Record<"api_key" | "private_key" | "credential" | "email" | "phone", boolean>
+  custom_patterns: string[]
+}
+
+type AgentModelPolicy = {
+  installed: boolean
+  enabled: boolean
+  mode: "audit" | "block"
+  allowed_agents: string[]
+  allowed_models: string[]
+  blocked_patterns: string[]
+}
+
 type PolicyConfig = {
-  version: 1
+  version: 1 | 2
+  git_ai_enabled: boolean
   default_allow_unmatched: boolean
   skill_policy: {
     installed: boolean
@@ -108,10 +138,15 @@ type PolicyConfig = {
     blocked_patterns: string[]
   }
   plugins: RepositoryPlugin[]
+  plugin_order: string[]
+  sensitive_data_policy: SensitiveDataPolicy
+  agent_model_policy: AgentModelPolicy
 }
 
 type RuntimeStatus = {
   ok: boolean
+  gitAiEnabled?: boolean
+  gitAiStatus?: "enabled" | "paused"
   gitAiVersion?: string
   distribution?: "custom-metrics" | "upstream-oss"
   granularFilterActive?: boolean
@@ -136,6 +171,34 @@ const EMPTY_GIT_AI: GitAiConfig = {
   telemetry_oss: "on",
 }
 
+const EMPTY_EVENT_SWITCHES = Object.fromEntries(
+  Object.keys(EVENT_LABELS).map((key) => [key, true]),
+) as Record<EventKey, boolean>
+
+const DEFAULT_SENSITIVE_POLICY: SensitiveDataPolicy = {
+  installed: false,
+  enabled: false,
+  action: "redact",
+  event_types: EMPTY_EVENT_SWITCHES,
+  built_in_rules: {
+    api_key: true,
+    private_key: true,
+    credential: true,
+    email: false,
+    phone: false,
+  },
+  custom_patterns: [],
+}
+
+const DEFAULT_AGENT_MODEL_POLICY: AgentModelPolicy = {
+  installed: false,
+  enabled: false,
+  mode: "audit",
+  allowed_agents: [],
+  allowed_models: [],
+  blocked_patterns: [],
+}
+
 function toLines(value: string[] | undefined) {
   return Array.isArray(value) ? value.join("\n") : ""
 }
@@ -147,12 +210,41 @@ function fromLines(value: string) {
     .filter(Boolean)
 }
 
+function repositoryPluginOrderKey(pluginId: string) {
+  return `repository:${pluginId}`
+}
+
+function normalizePluginOrder(
+  order: string[] | undefined,
+  policy: Pick<
+    PolicyConfig,
+    "plugins" | "skill_policy" | "sensitive_data_policy" | "agent_model_policy"
+  >,
+) {
+  const expected = [
+    ...policy.plugins.map((plugin) => repositoryPluginOrderKey(plugin.id)),
+    ...(policy.skill_policy.installed ? ["skill_filter"] : []),
+    ...(policy.sensitive_data_policy.installed ? ["sensitive_data"] : []),
+    ...(policy.agent_model_policy.installed ? ["agent_model"] : []),
+  ]
+  const expectedKeys = new Set(expected)
+  const result: string[] = []
+  for (const key of order ?? []) {
+    if (expectedKeys.has(key) && !result.includes(key)) {
+      result.push(key)
+    }
+  }
+  return [...result, ...expected.filter((key) => !result.includes(key))]
+}
+
 function normalizePolicy(value: PolicyConfig): PolicyConfig {
   const legacySkillPolicy = value.skill_policy as PolicyConfig["skill_policy"] & {
     fixed_project_directory?: string
   }
-  return {
+  const normalized: PolicyConfig = {
     ...value,
+    version: 2,
+    git_ai_enabled: value.git_ai_enabled ?? true,
     skill_policy: {
       installed: value.skill_policy.installed ?? true,
       enabled: value.skill_policy.enabled,
@@ -160,13 +252,52 @@ function normalizePolicy(value: PolicyConfig): PolicyConfig {
     },
     plugins: value.plugins.map((plugin) => ({
       ...plugin,
+      priority: plugin.priority ?? 100,
+      match: {
+        all_repositories: plugin.match?.all_repositories ?? false,
+        hosts: plugin.match?.hosts ?? [],
+        repositories: plugin.match?.repositories ?? [],
+        directories: plugin.match?.directories ?? [],
+        branches: plugin.match?.branches ?? [],
+      },
       fixed_project_directory:
         plugin.fixed_project_directory ??
         (plugin.id === "github"
           ? legacySkillPolicy.fixed_project_directory ?? ""
           : ""),
     })),
+    sensitive_data_policy: {
+      ...DEFAULT_SENSITIVE_POLICY,
+      ...value.sensitive_data_policy,
+      event_types: {
+        ...EMPTY_EVENT_SWITCHES,
+        ...value.sensitive_data_policy?.event_types,
+      },
+      built_in_rules: {
+        ...DEFAULT_SENSITIVE_POLICY.built_in_rules,
+        ...value.sensitive_data_policy?.built_in_rules,
+      },
+      custom_patterns: value.sensitive_data_policy?.custom_patterns ?? [],
+    },
+    agent_model_policy: {
+      ...DEFAULT_AGENT_MODEL_POLICY,
+      ...value.agent_model_policy,
+      allowed_agents: value.agent_model_policy?.allowed_agents ?? [],
+      allowed_models: value.agent_model_policy?.allowed_models ?? [],
+        blocked_patterns: value.agent_model_policy?.blocked_patterns ?? [],
+      },
+    plugin_order: [],
   }
+  normalized.plugin_order = normalizePluginOrder(value.plugin_order, normalized)
+  return normalized
+}
+
+function nextRepositoryPluginId(plugins: RepositoryPlugin[]) {
+  let sequence = 1
+  while (plugins.some((plugin) => plugin.id === `repository-${sequence}`)) {
+    sequence += 1
+  }
+  return `repository-${sequence}`
 }
 
 async function readResponse<T>(response: Response): Promise<T> {
@@ -248,6 +379,12 @@ export function App() {
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
   const [addPluginOpen, setAddPluginOpen] = useState(false)
+  const [viewingConfig, setViewingConfig] = useState(false)
+  const [configViewer, setConfigViewer] = useState<{
+    title: string
+    description: string
+    content: Record<string, unknown>
+  } | null>(null)
 
   const loadConfig = useCallback(async () => {
     try {
@@ -281,15 +418,29 @@ export function App() {
     [enabledPlugins],
   )
   const installedModuleCount =
-    (policy?.plugins.length ? 1 : 0) +
-    (policy?.skill_policy.installed ? 1 : 0)
+    (policy?.plugins.length ?? 0) +
+    (policy?.skill_policy.installed ? 1 : 0) +
+    (policy?.sensitive_data_policy.installed ? 1 : 0) +
+    (policy?.agent_model_policy.installed ? 1 : 0)
   const enabledModuleCount =
-    (policy?.plugins.some((plugin) => plugin.enabled) ? 1 : 0) +
-    (policy?.skill_policy.installed && policy.skill_policy.enabled ? 1 : 0)
+    (policy?.plugins.filter((plugin) => plugin.enabled).length ?? 0) +
+    (policy?.skill_policy.installed && policy.skill_policy.enabled ? 1 : 0) +
+    (policy?.sensitive_data_policy.installed && policy.sensitive_data_policy.enabled ? 1 : 0) +
+    (policy?.agent_model_policy.installed && policy.agent_model_policy.enabled ? 1 : 0)
+  const pluginOrderIndexes = useMemo(
+    () => new Map(policy?.plugin_order.map((key, index) => [key, index])),
+    [policy?.plugin_order],
+  )
+  const savedGitAiEnabled = runtime.gitAiEnabled ?? policy?.git_ai_enabled ?? true
+  const hasPendingGitAiStatus = policy?.git_ai_enabled !== savedGitAiEnabled
   const availablePluginTypes = useMemo(() => {
-    const available: Array<"repository" | "skill_filter"> = []
-    if (!policy?.plugins.length) available.push("repository")
+    const available: Array<
+      "repository" | "skill_filter" | "sensitive_data" | "agent_model"
+    > = []
+    if (policy) available.push("repository")
     if (!policy?.skill_policy.installed) available.push("skill_filter")
+    if (!policy?.sensitive_data_policy.installed) available.push("sensitive_data")
+    if (!policy?.agent_model_policy.installed) available.push("agent_model")
     return available
   }, [policy])
   const markGitAi = (next: GitAiConfig) => {
@@ -315,18 +466,32 @@ export function App() {
     })
   }
 
-  const addPlugin = (type: "repository" | "skill_filter") => {
+  const addPlugin = (
+    type:
+      | "repository"
+      | "skill_filter"
+      | "sensitive_data"
+      | "agent_model",
+  ) => {
     if (!policy) return
     if (type === "repository") {
-      if (policy.plugins.length) return
+      const pluginId = nextRepositoryPluginId(policy.plugins)
       markPolicy({
         ...policy,
         plugins: [
+          ...policy.plugins,
           {
-            id: "repository",
-            name: "仓库插件",
+            id: pluginId,
+            name: `仓库插件 ${policy.plugins.length + 1}`,
             enabled: true,
-            match: { hosts: ["example.com"] },
+            priority: 100,
+            match: {
+              all_repositories: false,
+              hosts: ["example.com"],
+              repositories: [],
+              directories: [],
+              branches: [],
+            },
             fixed_project_directory: "",
             allow: Object.fromEntries(
               Object.keys(EVENT_LABELS).map((key) => [key, false]),
@@ -336,8 +501,12 @@ export function App() {
             ) as Record<FieldKey, boolean>,
           },
         ],
+        plugin_order: [
+          ...policy.plugin_order,
+          repositoryPluginOrderKey(pluginId),
+        ],
       })
-    } else {
+    } else if (type === "skill_filter") {
       markPolicy({
         ...policy,
         skill_policy: {
@@ -345,6 +514,27 @@ export function App() {
           installed: true,
           enabled: true,
         },
+        plugin_order: [...policy.plugin_order, "skill_filter"],
+      })
+    } else if (type === "sensitive_data") {
+      markPolicy({
+        ...policy,
+        sensitive_data_policy: {
+          ...DEFAULT_SENSITIVE_POLICY,
+          installed: true,
+          enabled: true,
+        },
+        plugin_order: [...policy.plugin_order, "sensitive_data"],
+      })
+    } else if (type === "agent_model") {
+      markPolicy({
+        ...policy,
+        agent_model_policy: {
+          ...DEFAULT_AGENT_MODEL_POLICY,
+          installed: true,
+          enabled: true,
+        },
+        plugin_order: [...policy.plugin_order, "agent_model"],
       })
     }
     setAddPluginOpen(false)
@@ -355,6 +545,9 @@ export function App() {
     markPolicy({
       ...policy,
       plugins: policy.plugins.filter((plugin) => plugin.id !== pluginId),
+      plugin_order: policy.plugin_order.filter(
+        (key) => key !== repositoryPluginOrderKey(pluginId),
+      ),
     })
   }
 
@@ -367,6 +560,26 @@ export function App() {
         installed: false,
         enabled: false,
       },
+      plugin_order: policy.plugin_order.filter((key) => key !== "skill_filter"),
+    })
+  }
+
+  const uninstallPolicyPlugin = (
+    target: "sensitive_data_policy" | "agent_model_policy",
+  ) => {
+    if (!policy) return
+    markPolicy({
+      ...policy,
+      [target]: {
+        ...policy[target],
+        installed: false,
+        enabled: false,
+      },
+      plugin_order: policy.plugin_order.filter(
+        (key) =>
+          key !==
+          (target === "sensitive_data_policy" ? "sensitive_data" : "agent_model"),
+      ),
     })
   }
 
@@ -448,6 +661,33 @@ export function App() {
     }
   }
 
+  const viewPersistedConfig = async (target: "gitAi" | "policy") => {
+    setViewingConfig(true)
+    try {
+      const response = await fetch("/api/config", { cache: "no-store" })
+      const payload = await readResponse<ConfigResponse>(response)
+      setConfigViewer(
+        target === "gitAi"
+          ? {
+              title: "当前 Git AI 原生配置",
+              description:
+                "读取 ~/.git-ai/config.json 中由本页面管理的已保存字段，未保存更改和敏感未知字段不会显示。",
+              content: payload.gitAi,
+            }
+          : {
+              title: "当前插件策略配置",
+              description:
+                "读取 ~/.git-ai/filter_plugins.json 中已写入磁盘的完整插件策略，未保存更改不会显示。",
+              content: payload.policy,
+            },
+      )
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "读取当前配置失败")
+    } finally {
+      setViewingConfig(false)
+    }
+  }
+
   if (!gitAi || !policy) {
     return (
       <>
@@ -494,7 +734,7 @@ export function App() {
         </header>
 
         <main className="mx-auto max-w-6xl space-y-6 px-4 py-6 sm:px-6">
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Card size="sm">
               <CardHeader>
                 <CardDescription>已安装插件</CardDescription>
@@ -523,6 +763,25 @@ export function App() {
                 </CardTitle>
               </CardHeader>
             </Card>
+            <Card size="sm">
+              <CardHeader>
+                <CardDescription>当前 Git AI 状态</CardDescription>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Activity
+                    className={`size-4 ${
+                      savedGitAiEnabled ? "text-emerald-600" : "text-amber-600"
+                    }`}
+                  />
+                  {hasPendingGitAiStatus
+                    ? policy.git_ai_enabled
+                      ? "开启（待保存）"
+                      : "暂停（待保存）"
+                    : savedGitAiEnabled
+                      ? "已开启"
+                      : "已暂停"}
+                </CardTitle>
+              </CardHeader>
+            </Card>
           </div>
 
           <Tabs defaultValue="system">
@@ -539,14 +798,37 @@ export function App() {
 
             <TabsContent value="system" className="mt-4">
               <Card>
-                <CardHeader>
-                  <CardTitle>Git AI 原生设置</CardTitle>
-                  <CardDescription>
-                    写入 ~/.git-ai/config.json，未知字段会原样保留。
-                  </CardDescription>
+                <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="space-y-1">
+                    <CardTitle>Git AI 原生设置</CardTitle>
+                    <CardDescription>
+                      写入 ~/.git-ai/config.json，未知字段会原样保留。
+                    </CardDescription>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void viewPersistedConfig("gitAi")}
+                    disabled={viewingConfig}
+                  >
+                    {viewingConfig ? "读取中..." : "查看配置"}
+                  </Button>
                 </CardHeader>
                 <CardContent className="space-y-6">
                   <div className="grid gap-4 md:grid-cols-2">
+                    <SettingSwitch
+                      id="git-ai-enabled"
+                      title="Git AI"
+                      description={
+                        policy.git_ai_enabled
+                          ? "已开启：按当前插件策略处理并转发 Git AI 上报"
+                          : "已暂停：全部 Git AI 上报会在本机拦截，恢复后继续按原策略处理"
+                      }
+                      checked={policy.git_ai_enabled}
+                      onCheckedChange={(checked) =>
+                        markPolicy({ ...policy, git_ai_enabled: checked })
+                      }
+                    />
                     <SettingSwitch
                       id="auto-updates"
                       title="自动更新"
@@ -650,24 +932,40 @@ export function App() {
                     <CardTitle>Git AI 运行兼容性</CardTitle>
                     <CardDescription>
                       {runtime.distribution === "upstream-oss"
-                        ? "检测到官方上游版：原生设置生效，但官方版没有 custom_metrics 扩展点，下面的仓库和 Skill 细粒度上报规则不会接管 /worker/metrics/upload。"
-                        : "检测到 custom_metrics 定制版：仓库、Skill、数据类型和字段规则会在请求离开本机前执行。"}
+                        ? "检测到官方上游版：原生设置生效，但官方版没有 custom_metrics 扩展点，下面的仓库和 Skill 细粒度上报规则不会接管 /worker/metrics/upload。仓库插件可以添加多个，主机规则重叠时按列表顺序使用第一个命中插件。"
+                        : "检测到 custom_metrics 定制版：仓库、Skill、数据类型和字段规则会在请求离开本机前执行。仓库插件可以添加多个，主机规则重叠时按列表顺序使用第一个命中插件。"}
                     </CardDescription>
                   </div>
-                  <Badge
-                    variant={
-                      runtime.granularFilterActive ? "secondary" : "outline"
-                    }
-                  >
-                    {runtime.granularFilterActive
-                      ? "细粒度过滤已接管"
-                      : "仅原生配置兼容"}
-                  </Badge>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void viewPersistedConfig("policy")}
+                      disabled={viewingConfig}
+                    >
+                      {viewingConfig ? "读取中..." : "查看配置"}
+                    </Button>
+                    <Badge
+                      variant={
+                        runtime.granularFilterActive ? "secondary" : "outline"
+                      }
+                    >
+                      {runtime.granularFilterActive
+                        ? "细粒度过滤已接管"
+                        : "仅原生配置兼容"}
+                    </Badge>
+                  </div>
                 </CardHeader>
               </Card>
 
+              <div className="flex flex-col gap-4">
               {policy.plugins.map((plugin) => (
-                <Card key={plugin.id}>
+                <Card
+                  key={plugin.id}
+                  style={{
+                    order: pluginOrderIndexes.get(repositoryPluginOrderKey(plugin.id)),
+                  }}
+                >
                   <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div className="min-w-0 flex-1 space-y-2">
                       <Badge variant="secondary">
@@ -752,24 +1050,44 @@ export function App() {
                     />
 
                     <div className="grid gap-6 md:grid-cols-2">
-                      <div className="space-y-2">
-                        <Label htmlFor={`hosts-${plugin.id}`}>
-                          匹配仓库主机
-                        </Label>
-                        <p className="text-sm text-muted-foreground">
-                          每行一个，例如 github.com。
-                        </p>
-                        <Textarea
-                          id={`hosts-${plugin.id}`}
-                          className="min-h-28 font-mono text-xs"
-                          value={toLines(plugin.match.hosts)}
-                          onChange={(event) =>
+                      <div className="space-y-4">
+                        <SettingSwitch
+                          id={`global-${plugin.id}`}
+                          title="全部仓库（全局规则）"
+                          description="全局规则始终排在所有特定仓库规则之后，适合作为默认策略。"
+                          checked={plugin.match.all_repositories}
+                          onCheckedChange={(checked) =>
                             updatePlugin(plugin.id, (current) => ({
                               ...current,
-                              match: { hosts: fromLines(event.target.value) },
+                              match: {
+                                ...current.match,
+                                all_repositories: checked,
+                              },
                             }))
                           }
                         />
+                        <div className="space-y-2">
+                          <Label htmlFor={`priority-${plugin.id}`}>特定规则优先级</Label>
+                          <p className="text-sm text-muted-foreground">
+                            数值越大越优先；同优先级按插件列表顺序匹配。
+                          </p>
+                          <Input
+                            id={`priority-${plugin.id}`}
+                            type="number"
+                            min="0"
+                            max="1000"
+                            value={plugin.priority}
+                            onChange={(event) => {
+                              const value = Number.parseInt(event.target.value, 10)
+                              updatePlugin(plugin.id, (current) => ({
+                                ...current,
+                                priority: Number.isFinite(value)
+                                  ? Math.min(1000, Math.max(0, value))
+                                  : 0,
+                              }))
+                            }}
+                          />
+                        </div>
                       </div>
                       <div className="space-y-2">
                         <Label htmlFor={`directory-${plugin.id}`}>
@@ -800,6 +1118,91 @@ export function App() {
                         </div>
                       </div>
                     </div>
+
+                    {!plugin.match.all_repositories && (
+                      <div className="grid gap-4 md:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label htmlFor={`hosts-${plugin.id}`}>匹配仓库主机</Label>
+                          <p className="text-sm text-muted-foreground">
+                            每行一条，可用 `github.com` 或 `*github.com*`。
+                          </p>
+                          <Textarea
+                            id={`hosts-${plugin.id}`}
+                            className="min-h-28 font-mono text-xs"
+                            value={toLines(plugin.match.hosts)}
+                            onChange={(event) =>
+                              updatePlugin(plugin.id, (current) => ({
+                                ...current,
+                                match: {
+                                  ...current.match,
+                                  hosts: fromLines(event.target.value),
+                                },
+                              }))
+                            }
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor={`repositories-${plugin.id}`}>匹配仓库</Label>
+                          <p className="text-sm text-muted-foreground">
+                            每行一条，可填 owner/repo、远程地址或通配符。
+                          </p>
+                          <Textarea
+                            id={`repositories-${plugin.id}`}
+                            className="min-h-28 font-mono text-xs"
+                            value={toLines(plugin.match.repositories)}
+                            onChange={(event) =>
+                              updatePlugin(plugin.id, (current) => ({
+                                ...current,
+                                match: {
+                                  ...current.match,
+                                  repositories: fromLines(event.target.value),
+                                },
+                              }))
+                            }
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor={`directories-${plugin.id}`}>匹配项目目录</Label>
+                          <p className="text-sm text-muted-foreground">
+                            多条件会同时生效；可用 `/work/*` 缩小范围。
+                          </p>
+                          <Textarea
+                            id={`directories-${plugin.id}`}
+                            className="min-h-28 font-mono text-xs"
+                            value={toLines(plugin.match.directories)}
+                            onChange={(event) =>
+                              updatePlugin(plugin.id, (current) => ({
+                                ...current,
+                                match: {
+                                  ...current.match,
+                                  directories: fromLines(event.target.value),
+                                },
+                              }))
+                            }
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor={`branches-${plugin.id}`}>匹配分支</Label>
+                          <p className="text-sm text-muted-foreground">
+                            每行一条，例如 main、release/* 或 feature/*。
+                          </p>
+                          <Textarea
+                            id={`branches-${plugin.id}`}
+                            className="min-h-28 font-mono text-xs"
+                            value={toLines(plugin.match.branches)}
+                            onChange={(event) =>
+                              updatePlugin(plugin.id, (current) => ({
+                                ...current,
+                                match: {
+                                  ...current.match,
+                                  branches: fromLines(event.target.value),
+                                },
+                              }))
+                            }
+                          />
+                        </div>
+                      </div>
+                    )}
 
                     <Separator />
 
@@ -860,14 +1263,16 @@ export function App() {
                         : "插件已停用"}
                     </Badge>
                     <span className="text-xs text-muted-foreground">
-                      按仓库主机匹配
+                      {plugin.match.all_repositories
+                        ? "全局默认策略"
+                        : `特定规则 · 优先级 ${plugin.priority}`}
                     </span>
                   </CardFooter>
                 </Card>
               ))}
 
               {policy.skill_policy.installed && (
-                <Card>
+                <Card style={{ order: pluginOrderIndexes.get("skill_filter") }}>
                   <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div className="space-y-2">
                       <Badge variant="secondary">
@@ -969,7 +1374,247 @@ export function App() {
                 </Card>
               )}
 
-              {!policy.plugins.length && !policy.skill_policy.installed && (
+              {policy.sensitive_data_policy.installed && (
+                <Card style={{ order: pluginOrderIndexes.get("sensitive_data") }}>
+                  <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="space-y-2">
+                      <Badge variant="secondary">
+                        <ShieldAlert />
+                        敏感内容脱敏插件
+                      </Badge>
+                      <CardTitle>请求内容二次保护</CardTitle>
+                      <CardDescription>
+                        在请求离开本机前检测文本。不会保存命中的原始内容。
+                      </CardDescription>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Label htmlFor="sensitive-enabled">启用</Label>
+                      <Switch
+                        id="sensitive-enabled"
+                        checked={policy.sensitive_data_policy.enabled}
+                        onCheckedChange={(checked) =>
+                          markPolicy({
+                            ...policy,
+                            sensitive_data_policy: {
+                              ...policy.sensitive_data_policy,
+                              enabled: checked,
+                            },
+                          })
+                        }
+                      />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label="删除敏感内容脱敏插件"
+                        onClick={() => uninstallPolicyPlugin("sensitive_data_policy")}
+                      >
+                        <Trash2 />
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-6">
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <Label htmlFor="sensitive-action">命中后的动作</Label>
+                        <select
+                          id="sensitive-action"
+                          className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                          value={policy.sensitive_data_policy.action}
+                          onChange={(event) =>
+                            markPolicy({
+                              ...policy,
+                              sensitive_data_policy: {
+                                ...policy.sensitive_data_policy,
+                                action: event.target.value as "redact" | "block",
+                              },
+                            })
+                          }
+                        >
+                          <option value="redact">脱敏后继续上报</option>
+                          <option value="block">直接阻止上报</option>
+                        </select>
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="sensitive-patterns">自定义正则</Label>
+                        <Textarea
+                          id="sensitive-patterns"
+                          className="min-h-24 font-mono text-xs"
+                          placeholder="每行一个正则"
+                          value={toLines(policy.sensitive_data_policy.custom_patterns)}
+                          onChange={(event) =>
+                            markPolicy({
+                              ...policy,
+                              sensitive_data_policy: {
+                                ...policy.sensitive_data_policy,
+                                custom_patterns: fromLines(event.target.value),
+                              },
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-3">
+                      <div>
+                        <h3 className="text-sm font-medium">内置识别规则</h3>
+                        <p className="text-sm text-muted-foreground">
+                          默认启用密钥、私钥和凭据；邮箱与手机号由你决定是否纳入。
+                        </p>
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+                        {(
+                          [
+                            ["api_key", "API Key"],
+                            ["private_key", "私钥"],
+                            ["credential", "密码 / 凭据"],
+                            ["email", "邮箱"],
+                            ["phone", "手机号"],
+                          ] as const
+                        ).map(([key, label]) => (
+                          <PermissionSwitch
+                            key={key}
+                            id={`sensitive-${key}`}
+                            label={label}
+                            checked={policy.sensitive_data_policy.built_in_rules[key]}
+                            onCheckedChange={(checked) =>
+                              markPolicy({
+                                ...policy,
+                                sensitive_data_policy: {
+                                  ...policy.sensitive_data_policy,
+                                  built_in_rules: {
+                                    ...policy.sensitive_data_policy.built_in_rules,
+                                    [key]: checked,
+                                  },
+                                },
+                              })
+                            }
+                          />
+                        ))}
+                      </div>
+                    </div>
+                    <div className="space-y-3">
+                      <h3 className="text-sm font-medium">作用数据类型</h3>
+                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                        {(Object.keys(EVENT_LABELS) as EventKey[]).map((key) => (
+                          <PermissionSwitch
+                            key={key}
+                            id={`sensitive-event-${key}`}
+                            label={EVENT_LABELS[key]}
+                            checked={policy.sensitive_data_policy.event_types[key]}
+                            onCheckedChange={(checked) =>
+                              markPolicy({
+                                ...policy,
+                                sensitive_data_policy: {
+                                  ...policy.sensitive_data_policy,
+                                  event_types: {
+                                    ...policy.sensitive_data_policy.event_types,
+                                    [key]: checked,
+                                  },
+                                },
+                              })
+                            }
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {policy.agent_model_policy.installed && (
+                <Card style={{ order: pluginOrderIndexes.get("agent_model") }}>
+                  <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="space-y-2">
+                      <Badge variant="secondary">
+                        <Bot />
+                        Agent / 模型治理插件
+                      </Badge>
+                      <CardTitle>允许名单与阻止规则</CardTitle>
+                      <CardDescription>
+                        允许名单支持通配符；审计模式只记录本地统计，阻止模式会拦截不合规上报。
+                      </CardDescription>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Label htmlFor="agent-model-enabled">启用</Label>
+                      <Switch
+                        id="agent-model-enabled"
+                        checked={policy.agent_model_policy.enabled}
+                        onCheckedChange={(checked) =>
+                          markPolicy({
+                            ...policy,
+                            agent_model_policy: {
+                              ...policy.agent_model_policy,
+                              enabled: checked,
+                            },
+                          })
+                        }
+                      />
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label="删除 Agent / 模型治理插件"
+                        onClick={() => uninstallPolicyPlugin("agent_model_policy")}
+                      >
+                        <Trash2 />
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-6">
+                    <div className="max-w-md space-y-2">
+                      <Label htmlFor="agent-model-mode">治理模式</Label>
+                      <select
+                        id="agent-model-mode"
+                        className="h-9 w-full rounded-md border bg-background px-3 text-sm"
+                        value={policy.agent_model_policy.mode}
+                        onChange={(event) =>
+                          markPolicy({
+                            ...policy,
+                            agent_model_policy: {
+                              ...policy.agent_model_policy,
+                              mode: event.target.value as "audit" | "block",
+                            },
+                          })
+                        }
+                      >
+                        <option value="audit">仅审计，不阻止</option>
+                        <option value="block">命中规则时阻止</option>
+                      </select>
+                    </div>
+                    <div className="grid gap-4 md:grid-cols-3">
+                      {(
+                        [
+                          ["allowed_agents", "允许的 Agent", "例如 codex、claude*"],
+                          ["allowed_models", "允许的模型", "例如 gpt-5*、claude-sonnet-*"],
+                          ["blocked_patterns", "阻止正则", "每行一个，不区分大小写"],
+                        ] as const
+                      ).map(([key, label, placeholder]) => (
+                        <div key={key} className="space-y-2">
+                          <Label htmlFor={`agent-model-${key}`}>{label}</Label>
+                          <Textarea
+                            id={`agent-model-${key}`}
+                            className="min-h-40 font-mono text-xs"
+                            placeholder={placeholder}
+                            value={toLines(policy.agent_model_policy[key])}
+                            onChange={(event) =>
+                              markPolicy({
+                                ...policy,
+                                agent_model_policy: {
+                                  ...policy.agent_model_policy,
+                                  [key]: fromLines(event.target.value),
+                                },
+                              })
+                            }
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
+
+              {!policy.plugins.length &&
+                !policy.skill_policy.installed &&
+                !policy.sensitive_data_policy.installed &&
+                !policy.agent_model_policy.installed && (
                 <Card>
                   <CardContent className="flex min-h-40 flex-col items-center justify-center gap-2 text-center">
                     <Puzzle className="size-6 text-muted-foreground" />
@@ -980,6 +1625,7 @@ export function App() {
                   </CardContent>
                 </Card>
               )}
+              </div>
 
               <Dialog open={addPluginOpen} onOpenChange={setAddPluginOpen}>
                 <DialogTrigger asChild>
@@ -998,7 +1644,7 @@ export function App() {
                   <DialogHeader>
                     <DialogTitle>添加插件</DialogTitle>
                     <DialogDescription>
-                      每种插件只能添加一次，并使用各自专属的配置表单。
+                      仓库插件可以添加多个；其余插件使用独立配置表单且每种只能添加一次。新插件会追加到当前列表最后。
                     </DialogDescription>
                   </DialogHeader>
                   <div className="grid gap-2">
@@ -1034,12 +1680,68 @@ export function App() {
                         </span>
                       </Button>
                     )}
+                    {availablePluginTypes.includes("sensitive_data") && (
+                      <Button
+                        variant="outline"
+                        className="h-auto justify-start gap-3 p-4 text-left"
+                        onClick={() => addPlugin("sensitive_data")}
+                      >
+                        <ShieldAlert className="size-5" />
+                        <span className="space-y-1">
+                          <span className="block font-medium">敏感内容脱敏</span>
+                          <span className="block text-xs font-normal text-muted-foreground">
+                            检测密钥、私钥、凭据等文本，可脱敏或阻止上报
+                          </span>
+                        </span>
+                      </Button>
+                    )}
+                    {availablePluginTypes.includes("agent_model") && (
+                      <Button
+                        variant="outline"
+                        className="h-auto justify-start gap-3 p-4 text-left"
+                        onClick={() => addPlugin("agent_model")}
+                      >
+                        <Bot className="size-5" />
+                        <span className="space-y-1">
+                          <span className="block font-medium">Agent / 模型治理</span>
+                          <span className="block text-xs font-normal text-muted-foreground">
+                            设置 Agent、模型允许名单与阻止规则
+                          </span>
+                        </span>
+                      </Button>
+                    )}
                   </div>
                 </DialogContent>
               </Dialog>
             </TabsContent>
           </Tabs>
         </main>
+
+        <Dialog
+          open={Boolean(configViewer)}
+          onOpenChange={(open) => {
+            if (!open) setConfigViewer(null)
+          }}
+        >
+          <DialogContent className="w-[96vw] max-w-6xl sm:max-w-6xl">
+            <DialogHeader>
+              <DialogTitle>{configViewer?.title}</DialogTitle>
+              <DialogDescription>{configViewer?.description}</DialogDescription>
+            </DialogHeader>
+            <div className="max-h-[70svh] overflow-auto rounded-lg border bg-muted/50 p-4">
+              {configViewer && (
+                <JsonView
+                  value={configViewer.content}
+                  collapsed={false}
+                  displayDataTypes={false}
+                  enableClipboard={false}
+                  shortenTextAfterLength={0}
+                  style={lightTheme}
+                />
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
 
         <footer className="fixed inset-x-0 bottom-0 z-20 border-t bg-background/95 backdrop-blur">
           <div className="mx-auto flex max-w-6xl flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6">

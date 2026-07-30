@@ -2,7 +2,7 @@
 
 ## 操作系统
 
-`npx git-ai-control start` 支持 macOS、Linux 和 Windows，三个系统共用相同的配置格式、过滤运行时和 Web 页面，仅用户级服务管理方式不同：
+`npx git-ai-control` 支持 macOS、Linux 和 Windows，三个系统共用相同的配置格式、过滤运行时和 Web 页面，仅用户级服务管理方式不同：
 
 - macOS：LaunchAgent；
 - Linux：systemd user；
@@ -22,6 +22,7 @@ Linux 需要可用的 systemd 用户会话。Windows 需要当前用户拥有创
 | 仓库级数据类型开关 | 支持 | 不支持 |
 | 仓库、路径、分支字段脱敏 | 支持 | 不支持 |
 | Skill 名称过滤 | 支持 | 不支持 |
+| 敏感内容脱敏、Agent/模型治理 | 支持 | 不支持 |
 | GitHub 仅上传脱敏 Token | 支持 | 官方版当前无法通过外部配置实现 |
 
 安装脚本会检查 `git-ai` 二进制是否包含 `custom_metrics.json` 扩展点：

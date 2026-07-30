@@ -51,6 +51,8 @@ EVENT_KEYS = {
     "prompt_report",
 }
 FIELD_KEYS = {"repository", "path", "branch"}
+SENSITIVE_RULE_KEYS = {"api_key", "private_key", "credential", "email", "phone"}
+POLICY_PLUGIN_ORDER_KEYS = {"skill_filter", "sensitive_data", "agent_model"}
 ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 
 
@@ -140,11 +142,70 @@ def validate_native_config(value) -> dict:
     return result
 
 
+def default_event_switches() -> dict:
+    return {key: True for key in sorted(EVENT_KEYS)}
+
+
+def validate_event_switches(value, label: str, *, default: bool = True) -> dict:
+    if value is None:
+        return {key: default for key in sorted(EVENT_KEYS)}
+    if not isinstance(value, dict) or set(value) != EVENT_KEYS:
+        raise ConfigError(f"{label} 必须包含全部数据类型")
+    if not all(isinstance(value[key], bool) for key in EVENT_KEYS):
+        raise ConfigError(f"{label} 的数据类型选项必须是布尔值")
+    return {key: value[key] for key in sorted(EVENT_KEYS)}
+
+
+def validate_plugin_control(value, label: str, *, extra: dict) -> dict:
+    if not isinstance(value, dict):
+        raise ConfigError(f"缺少 {label}")
+    installed = value.get("installed", False)
+    enabled = value.get("enabled", False)
+    if not isinstance(installed, bool) or not isinstance(enabled, bool):
+        raise ConfigError(f"{label} 的安装和启用状态必须是布尔值")
+    return {"installed": installed, "enabled": enabled, **extra}
+
+
+def normalize_plugin_order(
+    value,
+    plugins: list[dict],
+    *,
+    skill_installed: bool,
+    sensitive_installed: bool,
+    agent_model_installed: bool,
+) -> list[str]:
+    expected = [f"repository:{plugin['id']}" for plugin in plugins]
+    if skill_installed:
+        expected.append("skill_filter")
+    if sensitive_installed:
+        expected.append("sensitive_data")
+    if agent_model_installed:
+        expected.append("agent_model")
+
+    if value is None:
+        return expected
+    if not isinstance(value, list) or len(value) > len(expected) + len(POLICY_PLUGIN_ORDER_KEYS):
+        raise ConfigError("plugin_order 必须是有效的插件顺序数组")
+
+    expected_keys = set(expected)
+    result = []
+    for item in value:
+        if not isinstance(item, str) or not item or len(item) > 80:
+            raise ConfigError("plugin_order 包含无效条目")
+        if item in expected_keys and item not in result:
+            result.append(item)
+    return [*result, *(item for item in expected if item not in result)]
+
+
 def validate_policy_config(value) -> dict:
     if not isinstance(value, dict):
         raise ConfigError("插件策略必须是对象")
-    if value.get("version") != 1:
-        raise ConfigError("仅支持插件策略版本 1")
+    if value.get("version") not in {1, 2}:
+        raise ConfigError("仅支持插件策略版本 1 或 2")
+
+    git_ai_enabled = value.get("git_ai_enabled", True)
+    if not isinstance(git_ai_enabled, bool):
+        raise ConfigError("git_ai_enabled 必须是布尔值")
 
     skill_policy = value.get("skill_policy")
     if not isinstance(skill_policy, dict):
@@ -167,8 +228,8 @@ def validate_policy_config(value) -> dict:
             raise ConfigError(f"无效的 Skill 正则：{pattern}（{error}）") from error
 
     plugins = value.get("plugins")
-    if not isinstance(plugins, list) or len(plugins) > 1:
-        raise ConfigError("仓库插件只能配置一次")
+    if not isinstance(plugins, list) or len(plugins) > 32:
+        raise ConfigError("仓库插件最多配置 32 个")
 
     seen_ids = set()
     normalized_plugins = []
@@ -193,6 +254,23 @@ def validate_policy_config(value) -> dict:
         if not isinstance(match, dict):
             raise ConfigError(f"插件 {plugin_id} match 无效")
         hosts = validate_string_list(match.get("hosts", []), f"{plugin_id}.match.hosts", maximum=32)
+        repositories = validate_string_list(
+            match.get("repositories", []), f"{plugin_id}.match.repositories", maximum=64
+        )
+        directories = validate_string_list(
+            match.get("directories", []), f"{plugin_id}.match.directories", maximum=64
+        )
+        branches = validate_string_list(
+            match.get("branches", []), f"{plugin_id}.match.branches", maximum=64
+        )
+        all_repositories = match.get("all_repositories", False)
+        if not isinstance(all_repositories, bool):
+            raise ConfigError(f"{plugin_id}.match.all_repositories 必须是布尔值")
+        if not all_repositories and not any((hosts, repositories, directories, branches)):
+            raise ConfigError(f"插件 {plugin_id} 至少需要一个匹配条件，或开启全部仓库")
+        priority = plugin.get("priority", 100)
+        if not isinstance(priority, int) or isinstance(priority, bool) or not 0 <= priority <= 1000:
+            raise ConfigError(f"插件 {plugin_id} 的优先级必须是 0 到 1000 的整数")
         fixed_directory = plugin.get("fixed_project_directory", "")
         if not isinstance(fixed_directory, str) or len(fixed_directory) > 500:
             raise ConfigError(f"插件 {plugin_id} 的固定项目目录无效")
@@ -200,10 +278,7 @@ def validate_policy_config(value) -> dict:
             raise ConfigError(f"插件 {plugin_id} 的固定项目目录必须是绝对路径")
 
         allow = plugin.get("allow")
-        if not isinstance(allow, dict) or set(allow) != EVENT_KEYS:
-            raise ConfigError(f"插件 {plugin_id} 的数据类型选项不完整")
-        if not all(isinstance(allow[key], bool) for key in EVENT_KEYS):
-            raise ConfigError(f"插件 {plugin_id} 的数据类型选项必须是布尔值")
+        allow = validate_event_switches(allow, f"插件 {plugin_id} 的数据类型选项")
 
         fields = plugin.get("fields")
         if not isinstance(fields, dict) or set(fields) != FIELD_KEYS:
@@ -216,15 +291,99 @@ def validate_policy_config(value) -> dict:
                 "id": plugin_id,
                 "name": name.strip(),
                 "enabled": enabled,
-                "match": {"hosts": hosts},
+                "priority": priority,
+                "match": {
+                    "all_repositories": all_repositories,
+                    "hosts": hosts,
+                    "repositories": repositories,
+                    "directories": directories,
+                    "branches": branches,
+                },
                 "fixed_project_directory": fixed_directory,
-                "allow": {key: allow[key] for key in sorted(EVENT_KEYS)},
+                "allow": allow,
                 "fields": {key: fields[key] for key in sorted(FIELD_KEYS)},
             }
         )
 
+    sensitive = value.get("sensitive_data_policy", {})
+    sensitive_rules = sensitive.get("built_in_rules", {}) if isinstance(sensitive, dict) else {}
+    if sensitive_rules and set(sensitive_rules) != SENSITIVE_RULE_KEYS:
+        raise ConfigError("敏感内容插件的内置规则不完整")
+    if sensitive_rules and not all(isinstance(sensitive_rules[key], bool) for key in SENSITIVE_RULE_KEYS):
+        raise ConfigError("敏感内容插件的内置规则必须是布尔值")
+    sensitive_patterns = validate_string_list(
+        sensitive.get("custom_patterns", []) if isinstance(sensitive, dict) else [],
+        "敏感内容插件自定义正则",
+        maximum=64,
+    )
+    for pattern in sensitive_patterns:
+        try:
+            re.compile(pattern)
+        except re.error as error:
+            raise ConfigError(f"无效的敏感内容正则：{pattern}（{error}）") from error
+    sensitive_action = sensitive.get("action", "redact") if isinstance(sensitive, dict) else "redact"
+    if sensitive_action not in {"redact", "block"}:
+        raise ConfigError("敏感内容插件动作只能是 redact 或 block")
+    normalized_sensitive = validate_plugin_control(
+        sensitive,
+        "敏感内容插件",
+        extra={
+            "action": sensitive_action,
+            "event_types": validate_event_switches(
+                sensitive.get("event_types") if isinstance(sensitive, dict) else None,
+                "敏感内容插件作用事件",
+            ),
+            "built_in_rules": {
+                key: sensitive_rules.get(key, key in {"api_key", "private_key", "credential"})
+                for key in sorted(SENSITIVE_RULE_KEYS)
+            },
+            "custom_patterns": sensitive_patterns,
+        },
+    )
+
+    agent_model = value.get("agent_model_policy", {})
+    agent_mode = agent_model.get("mode", "audit") if isinstance(agent_model, dict) else "audit"
+    if agent_mode not in {"audit", "block"}:
+        raise ConfigError("Agent / 模型治理模式只能是 audit 或 block")
+    agent_blocked_patterns = validate_string_list(
+        agent_model.get("blocked_patterns", []) if isinstance(agent_model, dict) else [],
+        "Agent / 模型治理拦截正则",
+        maximum=128,
+    )
+    for pattern in agent_blocked_patterns:
+        try:
+            re.compile(pattern)
+        except re.error as error:
+            raise ConfigError(f"无效的 Agent / 模型正则：{pattern}（{error}）") from error
+    normalized_agent_model = validate_plugin_control(
+        agent_model,
+        "Agent / 模型治理插件",
+        extra={
+            "mode": agent_mode,
+            "allowed_agents": validate_string_list(
+                agent_model.get("allowed_agents", []) if isinstance(agent_model, dict) else [],
+                "允许的 Agent",
+                maximum=128,
+            ),
+            "allowed_models": validate_string_list(
+                agent_model.get("allowed_models", []) if isinstance(agent_model, dict) else [],
+                "允许的模型",
+                maximum=128,
+            ),
+            "blocked_patterns": agent_blocked_patterns,
+        },
+    )
+    plugin_order = normalize_plugin_order(
+        value.get("plugin_order"),
+        normalized_plugins,
+        skill_installed=skill_installed,
+        sensitive_installed=normalized_sensitive["installed"],
+        agent_model_installed=normalized_agent_model["installed"],
+    )
+
     return {
-        "version": 1,
+        "version": 2,
+        "git_ai_enabled": git_ai_enabled,
         "default_allow_unmatched": bool(value.get("default_allow_unmatched", True)),
         "skill_policy": {
             "installed": skill_installed,
@@ -232,6 +391,9 @@ def validate_policy_config(value) -> dict:
             "blocked_patterns": blocked_patterns,
         },
         "plugins": normalized_plugins,
+        "plugin_order": plugin_order,
+        "sensitive_data_policy": normalized_sensitive,
+        "agent_model_policy": normalized_agent_model,
     }
 
 
@@ -398,8 +560,16 @@ def runtime_status() -> dict:
         and bool(health.get("ok"))
         and bool(service.get("ok"))
     )
+    policy = read_json(POLICY_CONFIG_PATH, {})
+    git_ai_enabled = (
+        policy.get("git_ai_enabled", True)
+        if isinstance(policy, dict) and isinstance(policy.get("git_ai_enabled", True), bool)
+        else True
+    )
     return {
         "ok": granular_filter_active if supports_custom_metrics else True,
+        "gitAiEnabled": git_ai_enabled,
+        "gitAiStatus": "enabled" if git_ai_enabled else "paused",
         "distribution": "custom-metrics" if supports_custom_metrics else "upstream-oss",
         "granularFilterActive": granular_filter_active,
         "capabilities": {
@@ -543,6 +713,7 @@ class Handler(BaseHTTPRequestHandler):
                     "message": "配置已保存",
                     "gitAi": public_native_config(),
                     "policy": read_json(POLICY_CONFIG_PATH, {}),
+                    "runtime": runtime_status(),
                 },
             )
         except ConfigError as error:

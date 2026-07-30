@@ -40,6 +40,7 @@ const ROUTE_KEYS = {
   "/agent-usage": "agent_usage_endpoint_v2",
   "/prompt-report": "prompt_report_endpoint_v2",
 }
+const CONTROL_PANEL_STATUS_URL = "http://127.0.0.1:38742/api/status"
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -229,6 +230,21 @@ function copyRuntime(gitAiRoot) {
   }
 }
 
+function removeLegacyUsageDashboard(gitAiRoot, policyPath) {
+  const policy = readJson(policyPath, {})
+  if (policy && typeof policy === "object" && !Array.isArray(policy) && Object.hasOwn(policy, "usage_dashboard")) {
+    const {usage_dashboard: _legacyUsageDashboard, ...nextPolicy} = policy
+    writeJsonAtomic(policyPath, nextPolicy)
+    console.log("已移除旧版本的本地用量看板配置")
+  }
+
+  const usageDataPath = path.join(gitAiRoot, "usage_dashboard.json")
+  if (fs.existsSync(usageDataPath)) {
+    fs.rmSync(usageDataPath)
+    console.log("已删除旧版本的本地用量聚合数据")
+  }
+}
+
 function writeServiceFiles(platform, gitAiRoot, pythonCommand) {
   if (platform === "darwin") {
     const directory = path.join(os.homedir(), "Library", "LaunchAgents")
@@ -371,6 +387,28 @@ async function waitForHttp(url, label) {
   throw new Error(`${label}启动失败：${url}`)
 }
 
+export async function controlPanelIsRunning(url = CONTROL_PANEL_STATUS_URL) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 1_500)
+  try {
+    const response = await fetch(url, {signal: controller.signal})
+    if (!response.ok) {
+      return false
+    }
+    const status = await response.json()
+    return (
+      status &&
+      typeof status === "object" &&
+      typeof status.distribution === "string" &&
+      typeof status.gitAiStatus === "string"
+    )
+  } catch {
+    return false
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 export async function install(options = {}) {
   const platform = options.platform ?? process.platform
   if (!["darwin", "linux", "win32"].includes(platform)) {
@@ -405,6 +443,7 @@ export async function install(options = {}) {
       fs.chmodSync(policyPath, 0o600)
     }
   }
+  removeLegacyUsageDashboard(gitAiRoot, policyPath)
 
   const customMetricsSupported = fs
     .readFileSync(binary)
@@ -434,7 +473,7 @@ export async function install(options = {}) {
   writeServiceFiles(platform, gitAiRoot, pythonCommand)
   startServices(platform, gitAiRoot)
   await waitForHttp("http://127.0.0.1:38741/health", "过滤服务")
-  await waitForHttp("http://127.0.0.1:38742/api/status", "配置页面")
+  await waitForHttp(CONTROL_PANEL_STATUS_URL, "配置页面")
 
   console.log("安装完成：")
   console.log("  配置页面：http://127.0.0.1:38742")

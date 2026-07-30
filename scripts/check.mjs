@@ -36,6 +36,21 @@ if (
   process.exit(1)
 }
 
+if (
+  !run(python, [
+    ...prefix,
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "tests",
+    "-p",
+    "test_*.py",
+  ])
+) {
+  process.exit(1)
+}
+
 for (const file of [
   "bin/git-ai-control.js",
   "scripts/check.mjs",
