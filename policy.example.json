@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "default_allow_unmatched": true,
+  "skill_policy": {
+    "installed": true,
+    "enabled": true,
+    "blocked_patterns": [
+      "godot",
+      "\\bgame\\b",
+      "game-",
+      "-game",
+      "game_studio",
+      "phaser",
+      "three",
+      "webgl",
+      "unity",
+      "unreal",
+      "tactics",
+      "sprite",
+      "github",
+      "git-hub",
+      "cloudflare",
+      "cloud-flare"
+    ]
+  },
+  "plugins": [
+    {
+      "id": "github",
+      "name": "GitHub 仓库",
+      "enabled": true,
+      "match": {
+        "hosts": [
+          "github.com"
+        ]
+      },
+      "fixed_project_directory": "",
+      "allow": {
+        "agent": false,
+        "checkpoint": false,
+        "commit": false,
+        "prompt_duration": false,
+        "prompt_report": false,
+        "skill": false,
+        "token": true
+      },
+      "fields": {
+        "branch": false,
+        "path": false,
+        "repository": false
+      }
+    }
+  ]
+}

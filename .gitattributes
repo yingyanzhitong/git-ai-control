@@ -1,0 +1,3 @@
+static/assets/*.js whitespace=-trailing-space
+static/assets/*.css whitespace=-trailing-space
+static/assets/*.woff2 binary
