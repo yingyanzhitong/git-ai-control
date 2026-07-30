@@ -1,6 +1,6 @@
 {
   "name": "git-ai-control",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Git AI 本地配置与上传隐私控制面板",
   "type": "module",
   "bin": {
@@ -9,7 +9,6 @@
   "files": [
     "bin",
     "docs",
-    "launchagents",
     "plugins",
     "scripts",
     "static",
@@ -20,19 +19,19 @@
     "server.py"
   ],
   "scripts": {
-    "check": "node bin/git-ai-control.js --help && /usr/bin/python3 -m py_compile server.py plugins/upload-filter/plugin_filter_runtime.py && sh -n scripts/install.sh scripts/uninstall.sh"
+    "test": "node --test",
+    "check": "node bin/git-ai-control.js --help && node scripts/check.mjs && npm test"
   },
   "engines": {
     "node": ">=18"
   },
-  "os": [
-    "darwin"
-  ],
   "keywords": [
     "git-ai",
     "privacy",
     "telemetry",
-    "macos"
+    "macos",
+    "linux",
+    "windows"
   ],
   "repository": {
     "type": "git",

@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 
-import { spawnSync } from "node:child_process"
-import { fileURLToPath } from "node:url"
+import {spawnSync} from "node:child_process"
 import path from "node:path"
+import {fileURLToPath} from "node:url"
+
+import {browserCommand} from "../scripts/platform-services.mjs"
 
 const command = process.argv[2]
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
@@ -13,6 +15,7 @@ function printHelp() {
 
 用法：
   git-ai-control start    安装或更新本机服务，并打开配置页面
+  git-ai-control uninstall 卸载本机服务并恢复上报端点
   git-ai-control --help   显示帮助`)
 }
 
@@ -21,37 +24,32 @@ if (command === "--help" || command === "-h" || !command) {
   process.exit(0)
 }
 
-if (command !== "start") {
+if (!["start", "uninstall"].includes(command)) {
   console.error(`未知命令：${command}`)
   printHelp()
   process.exit(1)
 }
 
-if (process.platform !== "darwin") {
-  console.error("git-ai-control 目前仅支持 macOS")
+try {
+  if (command === "uninstall") {
+    const {uninstall} = await import("../scripts/uninstall.mjs")
+    await uninstall()
+    process.exit(0)
+  }
+  const {install} = await import("../scripts/install.mjs")
+  await install()
+} catch (error) {
+  console.error(`${command === "start" ? "安装" : "卸载"}失败：${error.message}`)
   process.exit(1)
 }
 
-const installResult = spawnSync("/bin/sh", [path.join(packageRoot, "scripts/install.sh")], {
-  cwd: packageRoot,
-  env: process.env,
-  stdio: "inherit",
-})
-
-if (installResult.error) {
-  console.error(`安装失败：${installResult.error.message}`)
-  process.exit(1)
-}
-if (installResult.status !== 0) {
-  process.exit(installResult.status ?? 1)
-}
-
-const openResult = spawnSync("/usr/bin/open", [controlPanelUrl], {
+const opener = browserCommand(process.platform, controlPanelUrl)
+const openResult = opener && spawnSync(opener.command, opener.args, {
   stdio: "ignore",
 })
-if (openResult.error || openResult.status !== 0) {
+if (!openResult || openResult.error || openResult.status !== 0) {
   console.error(`服务已启动，请手动访问 ${controlPanelUrl}`)
-  process.exit(1)
+  process.exit(0)
 }
 
 console.log(`已打开 Git AI 配置中心：${controlPanelUrl}`)

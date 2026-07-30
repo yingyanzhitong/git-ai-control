@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import py_compile
 import re
+import shutil
 import subprocess
 import tempfile
 import urllib.error
@@ -21,13 +23,15 @@ HOST = "127.0.0.1"
 PORT = 38742
 APP_ROOT = Path(__file__).resolve().parent
 STATIC_ROOT = APP_ROOT / "static"
-GIT_AI_ROOT = Path.home() / ".git-ai"
+GIT_AI_ROOT = Path(os.environ.get("GIT_AI_ROOT", Path.home() / ".git-ai")).resolve()
 NATIVE_CONFIG_PATH = GIT_AI_ROOT / "config.json"
 POLICY_CONFIG_PATH = GIT_AI_ROOT / "filter_plugins.json"
 CUSTOM_METRICS_PATH = GIT_AI_ROOT / "custom_metrics.json"
 FILTER_SCRIPT_PATH = GIT_AI_ROOT / "filters" / "plugin_filter_runtime.py"
 FILTER_HEALTH_URL = "http://127.0.0.1:38741/health"
-FILTER_LAUNCH_AGENT = f"gui/{os.getuid()}/com.git-ai.skill-usage-filter"
+FILTER_MAC_LABEL = "com.git-ai.skill-usage-filter"
+FILTER_LINUX_UNIT = "git-ai-filter.service"
+FILTER_WINDOWS_TASK = "GitAIFilter"
 
 NATIVE_FIELDS = {
     "git_path",
@@ -88,7 +92,10 @@ def atomic_write_json(path: Path, value) -> None:
 
 def public_native_config() -> dict:
     raw = read_json(NATIVE_CONFIG_PATH, {})
-    return {key: raw.get(key) for key in NATIVE_FIELDS if key in raw}
+    public = {key: raw.get(key) for key in NATIVE_FIELDS if key in raw}
+    if not public.get("git_path"):
+        public["git_path"] = shutil.which("git") or ""
+    return public
 
 
 def validate_string_list(value, label: str, *, maximum: int = 128) -> list[str]:
@@ -109,7 +116,11 @@ def validate_native_config(value) -> dict:
     result = {}
     if "git_path" in value:
         git_path = value["git_path"]
-        if not isinstance(git_path, str) or not git_path.startswith("/") or len(git_path) > 500:
+        if (
+            not isinstance(git_path, str)
+            or not os.path.isabs(git_path)
+            or len(git_path) > 500
+        ):
             raise ConfigError("Git 路径必须是绝对路径")
         result["git_path"] = git_path
 
@@ -185,7 +196,7 @@ def validate_policy_config(value) -> dict:
         fixed_directory = plugin.get("fixed_project_directory", "")
         if not isinstance(fixed_directory, str) or len(fixed_directory) > 500:
             raise ConfigError(f"插件 {plugin_id} 的固定项目目录无效")
-        if fixed_directory and not fixed_directory.startswith("/"):
+        if fixed_directory and not os.path.isabs(fixed_directory):
             raise ConfigError(f"插件 {plugin_id} 的固定项目目录必须是绝对路径")
 
         allow = plugin.get("allow")
@@ -261,23 +272,78 @@ def filter_health() -> dict:
         return {"ok": False, "error": str(error)}
 
 
-def launch_agent_status() -> dict:
-    result = subprocess.run(
-        ["launchctl", "print", FILTER_LAUNCH_AGENT],
-        check=False,
-        capture_output=True,
-        text=True,
-        timeout=3,
-    )
-    state_match = re.search(r"^\s*state = (\w+)", result.stdout, re.MULTILINE)
+def service_manager_name() -> str:
     return {
-        "ok": result.returncode == 0 and state_match and state_match.group(1) == "running",
-        "state": state_match.group(1) if state_match else "missing",
-    }
+        "Darwin": "launchd",
+        "Linux": "systemd-user",
+        "Windows": "task-scheduler",
+    }.get(platform.system(), "unknown")
+
+
+def filter_service_status(health: dict | None = None) -> dict:
+    manager = service_manager_name()
+    if health and health.get("ok"):
+        return {"ok": True, "state": "running", "manager": manager}
+
+    try:
+        if platform.system() == "Darwin":
+            label = f"gui/{os.getuid()}/{FILTER_MAC_LABEL}"
+            result = subprocess.run(
+                ["launchctl", "print", label],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            state_match = re.search(r"^\s*state = (\w+)", result.stdout, re.MULTILINE)
+            state = state_match.group(1) if state_match else "missing"
+            return {
+                "ok": result.returncode == 0 and state == "running",
+                "state": state,
+                "manager": manager,
+            }
+        if platform.system() == "Linux":
+            result = subprocess.run(
+                ["systemctl", "--user", "is-active", FILTER_LINUX_UNIT],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            state = result.stdout.strip() or "missing"
+            return {
+                "ok": result.returncode == 0 and state == "active",
+                "state": "running" if state == "active" else state,
+                "manager": manager,
+            }
+        if platform.system() == "Windows":
+            result = subprocess.run(
+                ["schtasks.exe", "/Query", "/TN", FILTER_WINDOWS_TASK],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            return {
+                "ok": False,
+                "state": "registered" if result.returncode == 0 else "missing",
+                "manager": manager,
+            }
+    except Exception as error:
+        return {"ok": False, "state": "unknown", "manager": manager, "error": str(error)}
+    return {"ok": False, "state": "unsupported", "manager": manager}
+
+
+def git_ai_binary_path() -> Path:
+    candidates = [
+        GIT_AI_ROOT / "bin" / "git-ai.exe",
+        GIT_AI_ROOT / "bin" / "git-ai",
+    ]
+    return next((candidate for candidate in candidates if candidate.exists()), candidates[-1])
 
 
 def git_ai_version() -> str:
-    binary = GIT_AI_ROOT / "bin" / "git-ai"
+    binary = git_ai_binary_path()
     try:
         result = subprocess.run(
             [str(binary), "--version"],
@@ -293,7 +359,7 @@ def git_ai_version() -> str:
 
 @lru_cache(maxsize=1)
 def custom_metrics_supported() -> bool:
-    binary = GIT_AI_ROOT / "bin" / "git-ai"
+    binary = git_ai_binary_path()
     try:
         return b"custom_metrics.json" in binary.read_bytes()
     except Exception:
@@ -323,14 +389,14 @@ def custom_metrics_routed() -> bool:
 
 def runtime_status() -> dict:
     health = filter_health()
-    agent = launch_agent_status()
+    service = filter_service_status(health)
     supports_custom_metrics = custom_metrics_supported()
     routes_are_local = custom_metrics_routed() if supports_custom_metrics else False
     granular_filter_active = (
         supports_custom_metrics
         and routes_are_local
         and bool(health.get("ok"))
-        and bool(agent.get("ok"))
+        and bool(service.get("ok"))
     )
     return {
         "ok": granular_filter_active if supports_custom_metrics else True,
@@ -341,7 +407,9 @@ def runtime_status() -> dict:
             "granularUploadFilter": supports_custom_metrics,
         },
         "filter": health,
-        "launchAgent": agent,
+        "launchAgent": service,
+        "service": service,
+        "platform": platform.system().lower(),
         "gitAiVersion": git_ai_version(),
         "paths": {
             "nativeConfig": str(NATIVE_CONFIG_PATH),
@@ -392,6 +460,38 @@ def run_self_test() -> dict:
             }
         )
     return {"ok": all(item["ok"] for item in checks), "checks": checks}
+
+
+def restart_filter_service() -> subprocess.CompletedProcess:
+    system = platform.system()
+    if system == "Darwin":
+        label = f"gui/{os.getuid()}/{FILTER_MAC_LABEL}"
+        command = ["launchctl", "kickstart", "-k", label]
+    elif system == "Linux":
+        command = ["systemctl", "--user", "restart", FILTER_LINUX_UNIT]
+    elif system == "Windows":
+        subprocess.run(
+            ["schtasks.exe", "/End", "/TN", FILTER_WINDOWS_TASK],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=6,
+        )
+        command = ["schtasks.exe", "/Run", "/TN", FILTER_WINDOWS_TASK]
+    else:
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout="",
+            stderr=f"不支持当前操作系统：{system}",
+        )
+    return subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=6,
+    )
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -459,13 +559,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, run_self_test())
             return
         if path == "/api/restart-filter":
-            result = subprocess.run(
-                ["launchctl", "kickstart", "-k", FILTER_LAUNCH_AGENT],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=6,
-            )
+            result = restart_filter_service()
             self.send_json(
                 200 if result.returncode == 0 else 500,
                 {

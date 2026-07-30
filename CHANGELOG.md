@@ -2,6 +2,22 @@
 
 本项目的所有重要变更都会记录在此文件中。
 
+## [0.3.0] - 2026-07-30
+
+### 新增
+
+- 支持通过同一条 `npx git-ai-control start` 命令安装到 macOS、Linux 和 Windows；
+- 新增 macOS LaunchAgent、Linux systemd user 和 Windows 任务计划程序适配；
+- 新增跨平台 Python、Git AI 二进制和 Git 可执行文件检测；
+- 新增 `npx git-ai-control uninstall` 跨平台卸载命令；
+- 新增 macOS、Ubuntu、Windows 的 GitHub Actions 检查矩阵和服务定义测试。
+
+### 变更
+
+- 控制页面的服务状态与重启接口改为按当前操作系统执行；
+- 安装、端点备份、运行时复制和健康检查统一由 Node.js 安装器管理；
+- 文档补充三平台安装条件、服务管理方式和文件位置。
+
 ## [0.2.0] - 2026-07-30
 
 ### 新增

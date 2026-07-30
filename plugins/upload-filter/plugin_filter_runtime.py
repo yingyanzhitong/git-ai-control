@@ -32,8 +32,9 @@ EVENT_TYPES = {
 
 HOST = "127.0.0.1"
 PORT = 38741
-POLICY_CONFIG_PATH = Path.home() / ".git-ai" / "filter_plugins.json"
-UPSTREAM_CONFIG_PATH = Path.home() / ".git-ai" / "upstream_metrics.json"
+GIT_AI_ROOT = Path(os.environ.get("GIT_AI_ROOT", Path.home() / ".git-ai")).resolve()
+POLICY_CONFIG_PATH = GIT_AI_ROOT / "filter_plugins.json"
+UPSTREAM_CONFIG_PATH = GIT_AI_ROOT / "upstream_metrics.json"
 OWNER_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$")
 SKILL_KEYS = {"skillName", "skill", "name"}
 PATH_KEYS = {

@@ -1,5 +1,15 @@
 # Git AI 兼容性说明
 
+## 操作系统
+
+`npx git-ai-control start` 支持 macOS、Linux 和 Windows，三个系统共用相同的配置格式、过滤运行时和 Web 页面，仅用户级服务管理方式不同：
+
+- macOS：LaunchAgent；
+- Linux：systemd user；
+- Windows：任务计划程序。
+
+Linux 需要可用的 systemd 用户会话。Windows 需要当前用户拥有创建登录任务的权限。安装器会从 `PATH` 自动寻找 Python 3，并按当前系统检测 `git-ai` 或 `git-ai.exe`。
+
 ## 结论
 
 本项目同时支持两类 Git AI，但支持层级不同：

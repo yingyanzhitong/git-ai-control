@@ -1,0 +1,36 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  cross-platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-latest
+          - ubuntu-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: npm ci
+      - run: npm run check
+      - name: Install frontend dependencies
+        working-directory: frontend/git-ai-control-panel
+        run: npm ci
+      - name: Check frontend
+        working-directory: frontend/git-ai-control-panel
+        run: npm run lint
+      - name: Build frontend
+        working-directory: frontend/git-ai-control-panel
+        run: npm run build

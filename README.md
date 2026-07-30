@@ -2,7 +2,7 @@
 
 公司统一安装了 Git AI，但不想让私人 GitHub 项目的仓库名、路径、分支或 Skill 使用情况被上报？可以试试 Git AI Control Panel。
 
-它是一个仅运行在 macOS 本机的 Git AI 配置与上传策略管理页面：不用手改 JSON，也不用为每条隐私规则编写脚本，就能按仓库主机控制允许上传的数据类型和字段。前端使用 React、Vite 与 shadcn/ui，Web 服务只监听 `127.0.0.1:38742`，不会向局域网或公网开放。
+它是一个支持 macOS、Linux 和 Windows 的 Git AI 本地配置与上传策略管理页面：不用手改 JSON，也不用为每条隐私规则编写脚本，就能按仓库主机控制允许上传的数据类型和字段。前端使用 React、Vite 与 shadcn/ui，Web 服务只监听 `127.0.0.1:38742`，不会向局域网或公网开放。
 
 > [!IMPORTANT]
 > 项目可以识别 `custom_metrics` 定制版和官方 [`git-ai-project/git-ai`](https://github.com/git-ai-project/git-ai)，但两者支持层级不同。仓库级事件开关、字段脱敏和 Skill 过滤目前需要 `custom_metrics` 扩展点；官方版只能管理 Git AI 已公开的原生配置。安装前请阅读[兼容性说明](COMPATIBILITY.md)。
@@ -34,10 +34,11 @@
 
 ### 1. 一条命令启动
 
-目前支持 macOS，并要求 Git AI 已安装在：
+支持 macOS、Linux 和 Windows，需要 Node.js 18+、Python 3，并要求 Git AI 已安装在默认目录：
 
 ```text
-~/.git-ai/bin/git-ai
+macOS / Linux: ~/.git-ai/bin/git-ai
+Windows:       %USERPROFILE%\.git-ai\bin\git-ai.exe
 ```
 
 确认文件存在后运行：
@@ -52,7 +53,7 @@ npx git-ai-control start
 2. 将原始上报端点备份到仅当前用户可读的本机配置；
 3. 安装控制页面和上传过滤运行时；
 4. 保留已有的 `config.json` 与 `filter_plugins.json`；
-5. 创建并启动两个 macOS LaunchAgent；
+5. 通过当前系统的用户级服务管理器创建并启动两个本机服务；
 6. 等待控制页面和过滤服务通过健康检查。
 
 如果浏览器没有自动打开，可以手动访问：
@@ -62,6 +63,14 @@ http://127.0.0.1:38742
 ```
 
 页面顶部会显示当前 Git AI 发行版、过滤接管状态和服务状态。
+
+各系统使用的服务管理方式：
+
+| 系统 | 服务管理器 | 使用条件 |
+| --- | --- | --- |
+| macOS | LaunchAgent | 当前图形用户会话 |
+| Linux | systemd user | 可用的 systemd 用户会话 |
+| Windows | 任务计划程序 | Windows 10/11，当前用户可创建登录任务 |
 
 ### 2. 配置仓库插件
 
@@ -122,23 +131,24 @@ Git AI
 | 内容 | 位置 |
 | --- | --- |
 | 过滤运行时源码 | `plugins/upload-filter/plugin_filter_runtime.py` |
-| LaunchAgent 模板 | `launchagents/*.plist.in` |
-| 安装与卸载脚本 | `scripts/install.sh`、`scripts/uninstall.sh` |
+| 跨平台安装器 | `scripts/install.mjs`、`scripts/uninstall.mjs` |
+| 服务适配器 | `scripts/platform-services.mjs` |
 | Git AI 原生配置 | `~/.git-ai/config.json` |
 | 插件策略 | `~/.git-ai/filter_plugins.json` |
 | 原上报端点本机备份 | `~/.git-ai/upstream_metrics.json` |
 | 过滤运行时安装副本 | `~/.git-ai/filters/plugin_filter_runtime.py` |
 | Web 服务安装副本 | `~/.git-ai/control-panel` |
-| Web 服务 LaunchAgent | `~/Library/LaunchAgents/com.git-ai.control-panel.plist` |
-| 过滤服务 LaunchAgent | `~/Library/LaunchAgents/com.git-ai.skill-usage-filter.plist` |
+| macOS 服务定义 | `~/Library/LaunchAgents/com.git-ai.*.plist` |
+| Linux 服务定义 | `~/.config/systemd/user/git-ai-*.service` |
+| Windows 服务定义 | `%USERPROFILE%\.git-ai\services\*.ps1` 与任务计划程序 |
 
 ## 卸载
 
 ```bash
-./scripts/uninstall.sh
+npx git-ai-control uninstall
 ```
 
-卸载脚本会停止两个服务、删除本项目安装的程序副本，并将上报端点恢复为 Git AI 原地址。`config.json`、`filter_plugins.json` 和日志会保留。
+卸载命令会停止两个服务、删除本项目安装的程序副本，并将上报端点恢复为 Git AI 原地址。`config.json`、`filter_plugins.json` 和日志会保留。
 
 ## 参与贡献
 
@@ -157,7 +167,7 @@ npm ci
 npm run lint
 npm run build
 cd ../..
-/usr/bin/python3 -m py_compile server.py plugins/upload-filter/plugin_filter_runtime.py
+npm run check
 ```
 
 提交 Pull Request 时请说明：
