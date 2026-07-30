@@ -1,0 +1,26 @@
+CHANGELOG.md
+  s_7e71e07aab4b31::t_59d33a609a8dc1 5-10
+frontend/git-ai-control-panel/package-lock.json
+  s_7e71e07aab4b31::t_12683aaeab77c0 3,9,660-682,690,3122-3140
+frontend/git-ai-control-panel/package.json
+  s_7e71e07aab4b31::t_7b7bd521268619 4
+package.json
+  s_7e71e07aab4b31::t_673838ad6aed67 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "6ab8683ae0a875f078ea308756c667dd1bdacdfb",
+  "prompts": {},
+  "logical_commit_id": "6ab8683ae0a875f078ea308756c667dd1bdacdfb",
+  "sessions": {
+    "s_7e71e07aab4b31": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fb249-82c4-7df2-8cec-bf0970914696",
+        "model": "unknown"
+      },
+      "human_author": "yingyanzhitong <yingyanzhitong@users.noreply.github.com>"
+    }
+  }
+}
