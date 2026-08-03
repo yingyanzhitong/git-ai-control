@@ -374,6 +374,8 @@ function LoadingPage() {
 
 export function App() {
   const [gitAi, setGitAi] = useState<GitAiConfig | null>(null)
+  const [excludeRepositoriesText, setExcludeRepositoriesText] = useState("")
+  const [excludePromptsText, setExcludePromptsText] = useState("")
   const [policy, setPolicy] = useState<PolicyConfig | null>(null)
   const [runtime, setRuntime] = useState<RuntimeStatus>({ ok: false })
   const [dirty, setDirty] = useState(false)
@@ -390,7 +392,12 @@ export function App() {
     try {
       const response = await fetch("/api/config", { cache: "no-store" })
       const payload = await readResponse<ConfigResponse>(response)
-      setGitAi({ ...EMPTY_GIT_AI, ...payload.gitAi })
+      const nextGitAi = { ...EMPTY_GIT_AI, ...payload.gitAi }
+      setGitAi(nextGitAi)
+      setExcludeRepositoriesText(toLines(nextGitAi.exclude_repositories))
+      setExcludePromptsText(
+        toLines(nextGitAi.exclude_prompts_in_repositories),
+      )
       setPolicy(normalizePolicy(payload.policy))
       setRuntime(payload.runtime ?? { ok: false })
       setDirty(false)
@@ -593,7 +600,12 @@ export function App() {
         body: JSON.stringify({ gitAi, policy }),
       })
       const payload = await readResponse<ConfigResponse>(response)
-      setGitAi({ ...EMPTY_GIT_AI, ...payload.gitAi })
+      const nextGitAi = { ...EMPTY_GIT_AI, ...payload.gitAi }
+      setGitAi(nextGitAi)
+      setExcludeRepositoriesText(toLines(nextGitAi.exclude_repositories))
+      setExcludePromptsText(
+        toLines(nextGitAi.exclude_prompts_in_repositories),
+      )
       setPolicy(normalizePolicy(payload.policy))
       if (payload.runtime) {
         setRuntime(payload.runtime)
@@ -888,13 +900,15 @@ export function App() {
                       <Textarea
                         id="exclude-repositories"
                         className="min-h-44 font-mono text-xs"
-                        value={toLines(gitAi.exclude_repositories)}
-                        onChange={(event) =>
+                        value={excludeRepositoriesText}
+                        onChange={(event) => {
+                          const value = event.target.value
+                          setExcludeRepositoriesText(value)
                           markGitAi({
                             ...gitAi,
-                            exclude_repositories: fromLines(event.target.value),
+                            exclude_repositories: fromLines(value),
                           })
-                        }
+                        }}
                       />
                     </div>
                     <div className="space-y-2">
@@ -907,17 +921,15 @@ export function App() {
                       <Textarea
                         id="exclude-prompts"
                         className="min-h-44 font-mono text-xs"
-                        value={toLines(
-                          gitAi.exclude_prompts_in_repositories,
-                        )}
-                        onChange={(event) =>
+                        value={excludePromptsText}
+                        onChange={(event) => {
+                          const value = event.target.value
+                          setExcludePromptsText(value)
                           markGitAi({
                             ...gitAi,
-                            exclude_prompts_in_repositories: fromLines(
-                              event.target.value,
-                            ),
+                            exclude_prompts_in_repositories: fromLines(value),
                           })
-                        }
+                        }}
                       />
                     </div>
                   </div>
