@@ -1,0 +1,34 @@
+static/assets/index-BP-ASNEM.js
+  s_6b77985b414f93::t_3b5333186afa9a 1,3,6,8-10,14,27,31,35,39,43-44,46,49-50
+static/index.html
+  s_6b77985b414f93::t_2322d5b29fb154 8
+CHANGELOG.md
+  s_6b77985b414f93::t_c987c7f17d2557 5-10
+frontend/git-ai-control-panel/package-lock.json
+  s_6b77985b414f93::t_592d4824442ef6 3,9
+frontend/git-ai-control-panel/package.json
+  s_6b77985b414f93::t_fcd8b976ec6a2b 4
+frontend/git-ai-control-panel/src/App.tsx
+  s_6b77985b414f93::t_cd5f4442f8a8ba 377-378,395-400,603-608,903-906,909,911,924-927,930,932
+package-lock.json
+  s_6b77985b414f93::t_1ab951aeefc20c 3,9
+package.json
+  s_6b77985b414f93::t_9d33faf941021f 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.15",
+  "base_commit_sha": "c5881ecd4fa95cfe27a478cabd4190ab1189b69e",
+  "prompts": {},
+  "logical_commit_id": "c5881ecd4fa95cfe27a478cabd4190ab1189b69e",
+  "sessions": {
+    "s_6b77985b414f93": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fc79a-4fdf-7cb2-90ca-3ff9f132982b",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "yingyanzhitong <yingyanzhitong@users.noreply.github.com>"
+    }
+  }
+}
