@@ -1,0 +1,32 @@
+static/assets/index-C52pcV51.css
+  s_dc65cd57f3661d::t_d16776d8e2cf89 2
+static/index.html
+  s_dc65cd57f3661d::t_119aa887f60826 8-9
+CHANGELOG.md
+  s_dc65cd57f3661d::t_1f9db2bd54b287 5-10
+frontend/git-ai-control-panel/package-lock.json
+  s_dc65cd57f3661d::t_217a6fb11a55a5 3,9
+frontend/git-ai-control-panel/package.json
+  s_dc65cd57f3661d::t_dadab85ef7b7b0 4
+frontend/git-ai-control-panel/src/components/ui/sonner.tsx
+  s_dc65cd57f3661d::t_df691533586e9e 3
+package.json
+  s_dc65cd57f3661d::t_31bafcf0f1c741 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "3bee32a91f91950e04f32364c1eba4fd391902e2",
+  "prompts": {},
+  "logical_commit_id": "3bee32a91f91950e04f32364c1eba4fd391902e2",
+  "sessions": {
+    "s_dc65cd57f3661d": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fda56-7f26-7f61-b49c-85521b5b5d22",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "yingyanzhitong <yingyanzhitong@users.noreply.github.com>"
+    }
+  }
+}
