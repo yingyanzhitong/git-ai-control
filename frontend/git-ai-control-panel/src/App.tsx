@@ -162,6 +162,23 @@ type ConfigResponse = {
   runtime?: RuntimeStatus
 }
 
+const REPOSITORY_MATCH_FIELDS = [
+  "hosts",
+  "repositories",
+  "directories",
+  "branches",
+] as const
+
+type RepositoryMatchField = (typeof REPOSITORY_MATCH_FIELDS)[number]
+
+const AGENT_MODEL_TEXT_FIELDS = [
+  "allowed_agents",
+  "allowed_models",
+  "blocked_patterns",
+] as const
+
+type AgentModelTextField = (typeof AGENT_MODEL_TEXT_FIELDS)[number]
+
 const EMPTY_GIT_AI: GitAiConfig = {
   git_path: "/usr/bin/git",
   exclude_repositories: [],
@@ -208,6 +225,27 @@ function fromLines(value: string) {
     .split(/\r?\n/)
     .map((item) => item.trim())
     .filter(Boolean)
+}
+
+function repositoryMatchTextKey(pluginId: string, field: RepositoryMatchField) {
+  return `${pluginId}:${field}`
+}
+
+function toRepositoryMatchTexts(plugins: RepositoryPlugin[]) {
+  return Object.fromEntries(
+    plugins.flatMap((plugin) =>
+      REPOSITORY_MATCH_FIELDS.map((field) => [
+        repositoryMatchTextKey(plugin.id, field),
+        toLines(plugin.match[field]),
+      ]),
+    ),
+  ) as Record<string, string>
+}
+
+function toAgentModelTexts(policy: AgentModelPolicy) {
+  return Object.fromEntries(
+    AGENT_MODEL_TEXT_FIELDS.map((field) => [field, toLines(policy[field])]),
+  ) as Record<AgentModelTextField, string>
 }
 
 function repositoryPluginOrderKey(pluginId: string) {
@@ -376,6 +414,14 @@ export function App() {
   const [gitAi, setGitAi] = useState<GitAiConfig | null>(null)
   const [excludeRepositoriesText, setExcludeRepositoriesText] = useState("")
   const [excludePromptsText, setExcludePromptsText] = useState("")
+  const [skillBlockedPatternsText, setSkillBlockedPatternsText] = useState("")
+  const [repositoryMatchTexts, setRepositoryMatchTexts] = useState<
+    Record<string, string>
+  >({})
+  const [sensitivePatternsText, setSensitivePatternsText] = useState("")
+  const [agentModelTexts, setAgentModelTexts] = useState<
+    Record<AgentModelTextField, string>
+  >(() => toAgentModelTexts(DEFAULT_AGENT_MODEL_POLICY))
   const [policy, setPolicy] = useState<PolicyConfig | null>(null)
   const [runtime, setRuntime] = useState<RuntimeStatus>({ ok: false })
   const [dirty, setDirty] = useState(false)
@@ -398,7 +444,16 @@ export function App() {
       setExcludePromptsText(
         toLines(nextGitAi.exclude_prompts_in_repositories),
       )
-      setPolicy(normalizePolicy(payload.policy))
+      const nextPolicy = normalizePolicy(payload.policy)
+      setSkillBlockedPatternsText(
+        toLines(nextPolicy.skill_policy.blocked_patterns),
+      )
+      setRepositoryMatchTexts(toRepositoryMatchTexts(nextPolicy.plugins))
+      setSensitivePatternsText(
+        toLines(nextPolicy.sensitive_data_policy.custom_patterns),
+      )
+      setAgentModelTexts(toAgentModelTexts(nextPolicy.agent_model_policy))
+      setPolicy(nextPolicy)
       setRuntime(payload.runtime ?? { ok: false })
       setDirty(false)
     } catch (error) {
@@ -473,6 +528,24 @@ export function App() {
     })
   }
 
+  const updatePluginMatchText = (
+    pluginId: string,
+    field: RepositoryMatchField,
+    value: string,
+  ) => {
+    setRepositoryMatchTexts((current) => ({
+      ...current,
+      [repositoryMatchTextKey(pluginId, field)]: value,
+    }))
+    updatePlugin(pluginId, (current) => ({
+      ...current,
+      match: {
+        ...current.match,
+        [field]: fromLines(value),
+      },
+    }))
+  }
+
   const addPlugin = (
     type:
       | "repository"
@@ -483,6 +556,13 @@ export function App() {
     if (!policy) return
     if (type === "repository") {
       const pluginId = nextRepositoryPluginId(policy.plugins)
+      setRepositoryMatchTexts((current) => ({
+        ...current,
+        [repositoryMatchTextKey(pluginId, "hosts")]: "example.com",
+        [repositoryMatchTextKey(pluginId, "repositories")]: "",
+        [repositoryMatchTextKey(pluginId, "directories")]: "",
+        [repositoryMatchTextKey(pluginId, "branches")]: "",
+      }))
       markPolicy({
         ...policy,
         plugins: [
@@ -549,6 +629,11 @@ export function App() {
 
   const deletePlugin = (pluginId: string) => {
     if (!policy) return
+    setRepositoryMatchTexts((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(([key]) => !key.startsWith(`${pluginId}:`)),
+      ),
+    )
     markPolicy({
       ...policy,
       plugins: policy.plugins.filter((plugin) => plugin.id !== pluginId),
@@ -606,7 +691,16 @@ export function App() {
       setExcludePromptsText(
         toLines(nextGitAi.exclude_prompts_in_repositories),
       )
-      setPolicy(normalizePolicy(payload.policy))
+      const nextPolicy = normalizePolicy(payload.policy)
+      setSkillBlockedPatternsText(
+        toLines(nextPolicy.skill_policy.blocked_patterns),
+      )
+      setRepositoryMatchTexts(toRepositoryMatchTexts(nextPolicy.plugins))
+      setSensitivePatternsText(
+        toLines(nextPolicy.sensitive_data_policy.custom_patterns),
+      )
+      setAgentModelTexts(toAgentModelTexts(nextPolicy.agent_model_policy))
+      setPolicy(nextPolicy)
       if (payload.runtime) {
         setRuntime(payload.runtime)
       }
@@ -1141,15 +1235,17 @@ export function App() {
                           <Textarea
                             id={`hosts-${plugin.id}`}
                             className="min-h-28 font-mono text-xs"
-                            value={toLines(plugin.match.hosts)}
+                            value={
+                              repositoryMatchTexts[
+                                repositoryMatchTextKey(plugin.id, "hosts")
+                              ] ?? toLines(plugin.match.hosts)
+                            }
                             onChange={(event) =>
-                              updatePlugin(plugin.id, (current) => ({
-                                ...current,
-                                match: {
-                                  ...current.match,
-                                  hosts: fromLines(event.target.value),
-                                },
-                              }))
+                              updatePluginMatchText(
+                                plugin.id,
+                                "hosts",
+                                event.target.value,
+                              )
                             }
                           />
                         </div>
@@ -1161,15 +1257,17 @@ export function App() {
                           <Textarea
                             id={`repositories-${plugin.id}`}
                             className="min-h-28 font-mono text-xs"
-                            value={toLines(plugin.match.repositories)}
+                            value={
+                              repositoryMatchTexts[
+                                repositoryMatchTextKey(plugin.id, "repositories")
+                              ] ?? toLines(plugin.match.repositories)
+                            }
                             onChange={(event) =>
-                              updatePlugin(plugin.id, (current) => ({
-                                ...current,
-                                match: {
-                                  ...current.match,
-                                  repositories: fromLines(event.target.value),
-                                },
-                              }))
+                              updatePluginMatchText(
+                                plugin.id,
+                                "repositories",
+                                event.target.value,
+                              )
                             }
                           />
                         </div>
@@ -1181,15 +1279,17 @@ export function App() {
                           <Textarea
                             id={`directories-${plugin.id}`}
                             className="min-h-28 font-mono text-xs"
-                            value={toLines(plugin.match.directories)}
+                            value={
+                              repositoryMatchTexts[
+                                repositoryMatchTextKey(plugin.id, "directories")
+                              ] ?? toLines(plugin.match.directories)
+                            }
                             onChange={(event) =>
-                              updatePlugin(plugin.id, (current) => ({
-                                ...current,
-                                match: {
-                                  ...current.match,
-                                  directories: fromLines(event.target.value),
-                                },
-                              }))
+                              updatePluginMatchText(
+                                plugin.id,
+                                "directories",
+                                event.target.value,
+                              )
                             }
                           />
                         </div>
@@ -1201,15 +1301,17 @@ export function App() {
                           <Textarea
                             id={`branches-${plugin.id}`}
                             className="min-h-28 font-mono text-xs"
-                            value={toLines(plugin.match.branches)}
+                            value={
+                              repositoryMatchTexts[
+                                repositoryMatchTextKey(plugin.id, "branches")
+                              ] ?? toLines(plugin.match.branches)
+                            }
                             onChange={(event) =>
-                              updatePlugin(plugin.id, (current) => ({
-                                ...current,
-                                match: {
-                                  ...current.match,
-                                  branches: fromLines(event.target.value),
-                                },
-                              }))
+                              updatePluginMatchText(
+                                plugin.id,
+                                "branches",
+                                event.target.value,
+                              )
                             }
                           />
                         </div>
@@ -1356,16 +1458,18 @@ export function App() {
                       <Textarea
                         id="blocked-patterns"
                         className="min-h-72 font-mono text-xs"
-                        value={toLines(policy.skill_policy.blocked_patterns)}
-                        onChange={(event) =>
+                        value={skillBlockedPatternsText}
+                        onChange={(event) => {
+                          const nextText = event.target.value
+                          setSkillBlockedPatternsText(nextText)
                           markPolicy({
                             ...policy,
                             skill_policy: {
                               ...policy.skill_policy,
-                              blocked_patterns: fromLines(event.target.value),
+                              blocked_patterns: fromLines(nextText),
                             },
                           })
-                        }
+                        }}
                       />
                     </div>
                   </CardContent>
@@ -1452,16 +1556,18 @@ export function App() {
                           id="sensitive-patterns"
                           className="min-h-24 font-mono text-xs"
                           placeholder="每行一个正则"
-                          value={toLines(policy.sensitive_data_policy.custom_patterns)}
-                          onChange={(event) =>
+                          value={sensitivePatternsText}
+                          onChange={(event) => {
+                            const value = event.target.value
+                            setSensitivePatternsText(value)
                             markPolicy({
                               ...policy,
                               sensitive_data_policy: {
                                 ...policy.sensitive_data_policy,
-                                custom_patterns: fromLines(event.target.value),
+                                custom_patterns: fromLines(value),
                               },
                             })
-                          }
+                          }}
                         />
                       </div>
                     </div>
@@ -1605,16 +1711,21 @@ export function App() {
                             id={`agent-model-${key}`}
                             className="min-h-40 font-mono text-xs"
                             placeholder={placeholder}
-                            value={toLines(policy.agent_model_policy[key])}
-                            onChange={(event) =>
+                            value={agentModelTexts[key]}
+                            onChange={(event) => {
+                              const value = event.target.value
+                              setAgentModelTexts((current) => ({
+                                ...current,
+                                [key]: value,
+                              }))
                               markPolicy({
                                 ...policy,
                                 agent_model_policy: {
                                   ...policy.agent_model_policy,
-                                  [key]: fromLines(event.target.value),
+                                  [key]: fromLines(value),
                                 },
                               })
-                            }
+                            }}
                           />
                         </div>
                       ))}
