@@ -1,0 +1,24 @@
+static/assets/index-B683nwOF.js
+  s_2a907a618b7e8c::t_4ab48462217eb8 1,8-9,49-50
+static/index.html
+  s_2a907a618b7e8c::t_c7bbe74aa85f96 8
+frontend/git-ai-control-panel/src/App.tsx
+  s_2a907a618b7e8c::t_a0cf823cd83c62 165-181,228-248,417-424,446-453,455-456,529-546,559-565,632-636,693-696,698-703,1238-1242,1244-1248,1260-1264,1266-1270,1282-1286,1288-1292,1304-1308,1310-1314,1461-1464,1469,1472,1559-1562,1567,1570,1714-1720,1725,1728
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "9e26f1a96a040b1eb7baafdc6a6c76a04a092259",
+  "prompts": {},
+  "logical_commit_id": "9e26f1a96a040b1eb7baafdc6a6c76a04a092259",
+  "sessions": {
+    "s_2a907a618b7e8c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff059-4063-7373-be7c-398d5b6ae0e3",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "yingyanzhitong <yingyanzhitong@users.noreply.github.com>"
+    }
+  }
+}
