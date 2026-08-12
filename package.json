@@ -1,6 +1,6 @@
 {
   "name": "git-ai-control",
-  "version": "0.4.11",
+  "version": "0.4.12",
   "description": "Git AI 本地配置与上传隐私控制面板",
   "type": "module",
   "bin": {
