@@ -522,6 +522,18 @@ def git_ai_version() -> str:
         return "unknown"
 
 
+def git_ai_updated_at() -> str:
+    try:
+        timestamp = git_ai_binary_path().stat().st_mtime
+        return (
+            datetime.fromtimestamp(timestamp, timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+    except OSError:
+        return ""
+
+
 @lru_cache(maxsize=1)
 def custom_metrics_supported() -> bool:
     binary = git_ai_binary_path()
@@ -584,6 +596,7 @@ def runtime_status() -> dict:
         "service": service,
         "platform": platform.system().lower(),
         "gitAiVersion": git_ai_version(),
+        "gitAiUpdatedAt": git_ai_updated_at(),
         "paths": {
             "nativeConfig": str(NATIVE_CONFIG_PATH),
             "policyConfig": str(POLICY_CONFIG_PATH),

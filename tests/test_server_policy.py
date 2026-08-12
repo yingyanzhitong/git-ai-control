@@ -1,6 +1,7 @@
 import copy
 import importlib.util
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from tempfile import TemporaryDirectory
 import unittest
@@ -118,6 +119,22 @@ class ServerPolicyTests(unittest.TestCase):
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["repositories"], ["github.com/example/recent"])
         self.assertEqual(events[0]["skills"], ["cloudflare-deploy"])
+
+    def test_reads_git_ai_binary_modified_time(self):
+        with TemporaryDirectory() as directory:
+            binary = Path(directory) / "bin" / "git-ai"
+            binary.parent.mkdir()
+            binary.touch()
+            expected_timestamp = datetime(2026, 8, 12, 4, 8, tzinfo=timezone.utc)
+            os.utime(binary, (expected_timestamp.timestamp(), expected_timestamp.timestamp()))
+            original_root = SERVER.GIT_AI_ROOT
+            try:
+                SERVER.GIT_AI_ROOT = Path(directory)
+                updated_at = SERVER.git_ai_updated_at()
+            finally:
+                SERVER.GIT_AI_ROOT = original_root
+
+        self.assertEqual(updated_at, "2026-08-12T04:08:00Z")
 
 
 if __name__ == "__main__":

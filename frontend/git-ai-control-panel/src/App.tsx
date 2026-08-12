@@ -8,6 +8,7 @@ import {
   FlaskConical,
   FolderGit2,
   GitBranch,
+  Languages,
   ListFilter,
   LoaderCircle,
   Plus,
@@ -20,6 +21,8 @@ import {
   Trash2,
 } from "lucide-react"
 import { toast } from "sonner"
+
+import { systemLocale, translate, type Locale } from "@/i18n"
 
 import {
   AlertDialog,
@@ -148,6 +151,7 @@ type RuntimeStatus = {
   gitAiEnabled?: boolean
   gitAiStatus?: "enabled" | "paused"
   gitAiVersion?: string
+  gitAiUpdatedAt?: string
   distribution?: "custom-metrics" | "upstream-oss"
   granularFilterActive?: boolean
   capabilities?: {
@@ -303,10 +307,10 @@ function summarizeFilterAuditEvents(
   )
 }
 
-function formatAuditTime(value: string) {
+function formatAuditTime(value: string, locale: Locale, unknownLabel: string) {
   const time = new Date(value)
-  if (Number.isNaN(time.getTime())) return "时间未知"
-  return new Intl.DateTimeFormat("zh-CN", {
+  if (Number.isNaN(time.getTime())) return unknownLabel
+  return new Intl.DateTimeFormat(locale, {
     month: "numeric",
     day: "numeric",
     hour: "2-digit",
@@ -314,14 +318,26 @@ function formatAuditTime(value: string) {
   }).format(time)
 }
 
-function formatFilterReason(reason: string) {
-  if (reason === "skill_pattern") return "命中 Skill 规则"
-  if (reason === "default_deny") return "未匹配仓库默认拦截"
-  if (reason === "git_ai_paused") return "Git AI 已暂停"
-  if (reason === "sensitive_content") return "命中敏感内容规则"
-  if (reason === "agent_model_policy") return "命中 Agent / 模型规则"
-  if (reason.startsWith("plugin:")) return "命中仓库插件策略"
-  return reason || "已拦截"
+function formatUpdatedAt(value: string, locale: Locale, unknownLabel: string) {
+  const time = new Date(value)
+  if (Number.isNaN(time.getTime())) return unknownLabel
+  return new Intl.DateTimeFormat(locale, {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(time)
+}
+
+function formatFilterReason(reason: string, t: (source: string) => string) {
+  if (reason === "skill_pattern") return t("命中 Skill 规则")
+  if (reason === "default_deny") return t("未匹配仓库默认拦截")
+  if (reason === "git_ai_paused") return t("Git AI 已暂停")
+  if (reason === "sensitive_content") return t("命中敏感内容规则")
+  if (reason === "agent_model_policy") return t("命中 Agent / 模型规则")
+  if (reason.startsWith("plugin:")) return t("命中仓库插件策略")
+  return reason || t("已拦截")
 }
 
 function repositoryPluginOrderKey(pluginId: string) {
@@ -420,7 +436,7 @@ async function readResponse<T>(response: Response): Promise<T> {
     message?: string
   }
   if (!response.ok || payload.ok === false) {
-    throw new Error(payload.message || `请求失败：${response.status}`)
+    throw new Error(payload.message || `Request failed: ${response.status}`)
   }
   return payload
 }
@@ -487,6 +503,20 @@ function LoadingPage() {
 }
 
 export function App() {
+  const [locale, setLocale] = useState<Locale>(() => {
+    try {
+      const stored = window.localStorage.getItem("git-ai-control-language")
+      if (stored === "zh-CN" || stored === "en") return stored
+    } catch {
+      // Keep the system-language default when storage is unavailable.
+    }
+    return systemLocale()
+  })
+  const t = useCallback(
+    (source: string, values?: Record<string, string | number>) =>
+      translate(locale, source, values),
+    [locale],
+  )
   const [gitAi, setGitAi] = useState<GitAiConfig | null>(null)
   const [excludeRepositoriesText, setExcludeRepositoriesText] = useState("")
   const [excludePromptsText, setExcludePromptsText] = useState("")
@@ -513,6 +543,16 @@ export function App() {
     content: Record<string, unknown>
   } | null>(null)
 
+  useEffect(() => {
+    document.documentElement.lang = locale
+    document.title = t("Git AI 配置中心")
+    try {
+      window.localStorage.setItem("git-ai-control-language", locale)
+    } catch {
+      // Language switching remains available without local storage.
+    }
+  }, [locale, t])
+
   const loadConfig = useCallback(async () => {
     try {
       const response = await fetch("/api/config", { cache: "no-store" })
@@ -536,9 +576,9 @@ export function App() {
       setRuntime(payload.runtime ?? { ok: false })
       setDirty(false)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "读取配置失败")
+      toast.error(error instanceof Error ? error.message : t("读取配置失败"))
     }
-  }, [])
+  }, [t])
 
   const loadFilterEvents = useCallback(async () => {
     setFilterEventsLoading(true)
@@ -549,12 +589,12 @@ export function App() {
       setFilterEventsError("")
     } catch (error) {
       setFilterEventsError(
-        error instanceof Error ? error.message : "读取过滤记录失败",
+        error instanceof Error ? error.message : t("读取过滤记录失败"),
       )
     } finally {
       setFilterEventsLoading(false)
     }
-  }, [])
+  }, [t])
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => void loadConfig())
@@ -597,6 +637,20 @@ export function App() {
     () => new Map(policy?.plugin_order.map((key, index) => [key, index])),
     [policy?.plugin_order],
   )
+  const eventLabels = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(EVENT_LABELS).map(([key, label]) => [key, t(label)]),
+      ) as Record<EventKey, string>,
+    [t],
+  )
+  const fieldLabels = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(FIELD_LABELS).map(([key, label]) => [key, t(label)]),
+      ) as Record<FieldKey, string>,
+    [t],
+  )
   const filteredRepositories = useMemo(
     () => summarizeFilterAuditEvents(filterEvents, "repositories"),
     [filterEvents],
@@ -608,21 +662,31 @@ export function App() {
   const filterAuditSections = useMemo(
     () => [
       {
-        title: "仓库",
+        title: t("仓库"),
         items: filteredRepositories,
-        emptyMessage: "尚未拦截包含仓库信息的上报",
+        emptyMessage: t("尚未拦截包含仓库信息的上报"),
       },
       {
         title: "Skills",
         items: filteredSkills,
-        emptyMessage: "尚未拦截 Skill 调用",
+        emptyMessage: t("尚未拦截 Skill 调用"),
       },
     ],
-    [filteredRepositories, filteredSkills],
+    [filteredRepositories, filteredSkills, t],
   )
   const savedGitAiEnabled = runtime.gitAiEnabled ?? policy?.git_ai_enabled ?? true
   const hasPendingGitAiStatus = policy?.git_ai_enabled !== savedGitAiEnabled
   const filterServiceOnline = runtime.filter?.ok === true
+  const gitAiUpdatedAt = formatUpdatedAt(
+    runtime.gitAiUpdatedAt ?? "",
+    locale,
+    t("时间未知"),
+  )
+  const controlPanelUpdatedAt = formatUpdatedAt(
+    __CONTROL_PANEL_UPDATED_AT__,
+    locale,
+    t("时间未知"),
+  )
   const availablePluginTypes = useMemo(() => {
     const available: Array<
       "repository" | "skill_filter" | "sensitive_data" | "agent_model"
@@ -697,7 +761,7 @@ export function App() {
           ...policy.plugins,
           {
             id: pluginId,
-            name: `仓库插件 ${policy.plugins.length + 1}`,
+            name: t("仓库插件 {{count}}", { count: policy.plugins.length + 1 }),
             enabled: true,
             priority: 100,
             match: {
@@ -833,9 +897,9 @@ export function App() {
         setRuntime(payload.runtime)
       }
       setDirty(false)
-      toast.success("配置已保存，下一次上报立即使用新策略")
+      toast.success(t("配置已保存，下一次上报立即使用新策略"))
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "保存失败")
+      toast.error(error instanceof Error ? error.message : t("保存失败"))
     } finally {
       setBusy(false)
     }
@@ -843,8 +907,8 @@ export function App() {
 
   const runTest = async () => {
     setBusy(true)
-    const toastId = toast.loading("正在验证配置", {
-      description: "检查插件策略、过滤脚本和本地服务连接…",
+    const toastId = toast.loading(t("正在验证配置"), {
+      description: t("检查插件策略、过滤脚本和本地服务连接…"),
     })
     try {
       const response = await fetch("/api/test", { method: "POST" })
@@ -853,28 +917,30 @@ export function App() {
         checks: Array<{ name: string; ok: boolean; message?: string }>
       }
       if (!response.ok || !Array.isArray(payload.checks)) {
-        throw new Error(payload.message || `请求失败：${response.status}`)
+        throw new Error(payload.message || `Request failed: ${response.status}`)
       }
       const failed = payload.checks.filter((check) => !check.ok)
       if (failed.length) {
-        toast.error("配置验证失败", {
+        toast.error(t("配置验证失败"), {
           id: toastId,
           description: failed
             .map((item) =>
               item.message ? `${item.name}：${item.message}` : item.name,
             )
-            .join("；"),
+            .join(locale === "zh-CN" ? "；" : "; "),
         })
       } else {
-        toast.success("配置验证通过", {
+        toast.success(t("配置验证通过"), {
           id: toastId,
-          description: payload.checks.map((item) => item.name).join("、"),
+          description: payload.checks
+            .map((item) => item.name)
+            .join(locale === "zh-CN" ? "、" : ", "),
         })
       }
     } catch (error) {
-      toast.error("配置验证失败", {
+      toast.error(t("配置验证失败"), {
         id: toastId,
-        description: error instanceof Error ? error.message : "验证请求失败",
+        description: error instanceof Error ? error.message : t("验证请求失败"),
       })
     } finally {
       setBusy(false)
@@ -886,10 +952,10 @@ export function App() {
     try {
       const response = await fetch("/api/restart-filter", { method: "POST" })
       const payload = await readResponse<{ message?: string }>(response)
-      toast.success(payload.message || "过滤服务已重启")
+      toast.success(payload.message || t("过滤服务已重启"))
       window.setTimeout(() => void loadConfig(), 900)
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "重启失败")
+      toast.error(error instanceof Error ? error.message : t("重启失败"))
     } finally {
       setBusy(false)
     }
@@ -903,20 +969,20 @@ export function App() {
       setConfigViewer(
         target === "gitAi"
           ? {
-              title: "当前 Git AI 原生配置",
+              title: t("当前 Git AI 原生配置"),
               description:
-                "读取 ~/.git-ai/config.json 中由本页面管理的已保存字段，未保存更改和敏感未知字段不会显示。",
+                t("读取 ~/.git-ai/config.json 中由本页面管理的已保存字段，未保存更改和敏感未知字段不会显示。"),
               content: payload.gitAi,
             }
           : {
-              title: "当前插件策略配置",
+              title: t("当前插件策略配置"),
               description:
-                "读取 ~/.git-ai/filter_plugins.json 中已写入磁盘的完整插件策略，未保存更改不会显示。",
+                t("读取 ~/.git-ai/filter_plugins.json 中已写入磁盘的完整插件策略，未保存更改不会显示。"),
               content: payload.policy,
             },
       )
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : "读取当前配置失败")
+      toast.error(error instanceof Error ? error.message : t("读取当前配置失败"))
     } finally {
       setViewingConfig(false)
     }
@@ -942,32 +1008,48 @@ export function App() {
               </div>
               <div>
                 <div className="flex items-center gap-2">
-                  <h1 className="text-xl font-semibold">Git AI 配置中心</h1>
+                  <h1 className="text-xl font-semibold">{t("Git AI 配置中心")}</h1>
                   <Badge variant="outline" className="font-mono text-xs font-normal">
                     v{__CONTROL_PANEL_VERSION__}
                   </Badge>
                 </div>
-                <p className="text-sm text-muted-foreground">
-                  本机插件策略与上传权限
-                </p>
+                <p className="text-sm text-muted-foreground">{t("本机插件策略与上传权限")}</p>
               </div>
             </div>
-            <Badge
-              variant={
-                runtime.distribution === "upstream-oss"
-                  ? "outline"
+            <div className="flex items-center gap-2">
+              <label className="sr-only" htmlFor="language">
+                {t("语言")}
+              </label>
+              <div className="flex h-8 items-center gap-1 rounded-md border bg-background px-2 text-sm">
+                <Languages className="size-3.5 text-muted-foreground" />
+                <select
+                  id="language"
+                  aria-label={t("语言")}
+                  className="bg-transparent text-sm outline-none"
+                  value={locale}
+                  onChange={(event) => setLocale(event.target.value as Locale)}
+                >
+                  <option value="zh-CN">中文</option>
+                  <option value="en">English</option>
+                </select>
+              </div>
+              <Badge
+                variant={
+                  runtime.distribution === "upstream-oss"
+                    ? "outline"
+                    : runtime.ok
+                      ? "secondary"
+                      : "destructive"
+                }
+              >
+                <Activity className="size-3.5" />
+                {runtime.distribution === "upstream-oss"
+                  ? t("上游 OSS · 原生配置")
                   : runtime.ok
-                    ? "secondary"
-                    : "destructive"
-              }
-            >
-              <Activity className="size-3.5" />
-              {runtime.distribution === "upstream-oss"
-                ? "上游 OSS · 原生配置"
-                : runtime.ok
-                  ? "定制版 · 过滤在线"
-                  : "定制版 · 过滤异常"}
-            </Badge>
+                    ? t("定制版 · 过滤在线")
+                    : t("定制版 · 过滤异常")}
+              </Badge>
+            </div>
           </div>
         </header>
 
@@ -975,61 +1057,79 @@ export function App() {
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <Card size="sm">
               <CardHeader>
-                <CardDescription>已安装插件</CardDescription>
+                <CardDescription>{t("已安装插件")}</CardDescription>
                 <CardTitle className="flex items-baseline gap-2 text-2xl">
                   {installedModuleCount}
                   <span className="text-xs font-normal text-muted-foreground">
-                    {enabledModuleCount} 个启用
+                    {t("{{count}} 个启用", { count: enabledModuleCount })}
                   </span>
                 </CardTitle>
               </CardHeader>
             </Card>
             <Card size="sm">
               <CardHeader>
-                <CardDescription>允许的数据通道</CardDescription>
+                <CardDescription>{t("允许的数据通道")}</CardDescription>
                 <CardTitle className="text-2xl">{allowedChannels}</CardTitle>
               </CardHeader>
             </Card>
             <Card size="sm">
               <CardHeader>
-                <CardDescription>配置状态</CardDescription>
+                <CardDescription>{t("配置状态")}</CardDescription>
                 <CardTitle className="flex items-center gap-2 text-base">
                   <CircleCheck
                     className={`size-4 ${dirty ? "text-amber-600" : "text-emerald-600"}`}
                   />
-                  {dirty ? "有未保存更改" : "已同步"}
+                  {dirty ? t("有未保存更改") : t("已同步")}
                 </CardTitle>
               </CardHeader>
             </Card>
             <Card size="sm">
               <CardHeader>
-                <CardDescription>当前 Git AI 状态</CardDescription>
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <Activity
-                    className={`size-4 ${
-                      savedGitAiEnabled ? "text-emerald-600" : "text-amber-600"
-                    }`}
-                  />
-                  {hasPendingGitAiStatus
-                    ? policy.git_ai_enabled
-                      ? "开启（待保存）"
-                      : "暂停（待保存）"
-                    : savedGitAiEnabled
-                      ? "已开启"
-                      : "已暂停"}
+                <CardDescription>{t("当前 Git AI 状态")}</CardDescription>
+                <CardTitle className="space-y-1 text-base">
+                  <div className="flex items-center gap-2">
+                    <Activity
+                      className={`size-4 ${
+                        savedGitAiEnabled ? "text-emerald-600" : "text-amber-600"
+                      }`}
+                    />
+                    <span>
+                      {hasPendingGitAiStatus
+                        ? policy.git_ai_enabled
+                          ? t("开启（待保存）")
+                          : t("暂停（待保存）")
+                        : savedGitAiEnabled
+                          ? t("已开启")
+                          : t("已暂停")}
+                    </span>
+                    <span className="shrink-0 font-mono text-sm font-normal text-muted-foreground">
+                      v{runtime.gitAiVersion || t("未知")}
+                    </span>
+                  </div>
+                  <p className="pl-6 text-xs font-normal text-muted-foreground">
+                    {t("更新于")} {gitAiUpdatedAt}
+                  </p>
                 </CardTitle>
               </CardHeader>
             </Card>
             <Card size="sm">
               <CardHeader>
-                <CardDescription>过滤服务状态</CardDescription>
-                <CardTitle className="flex items-center gap-2 text-base">
-                  <Activity
-                    className={`size-4 ${
-                      filterServiceOnline ? "text-emerald-600" : "text-destructive"
-                    }`}
-                  />
-                  {filterServiceOnline ? "已在线" : "已离线"}
+                <CardDescription>{t("过滤服务状态")}</CardDescription>
+                <CardTitle className="space-y-1 text-base">
+                  <div className="flex items-center gap-2">
+                    <Activity
+                      className={`size-4 ${
+                        filterServiceOnline ? "text-emerald-600" : "text-destructive"
+                      }`}
+                    />
+                    <span>{filterServiceOnline ? t("已在线") : t("已离线")}</span>
+                    <span className="shrink-0 font-mono text-sm font-normal text-muted-foreground">
+                      v{__CONTROL_PANEL_VERSION__}
+                    </span>
+                  </div>
+                  <p className="pl-6 text-xs font-normal text-muted-foreground">
+                    {t("更新于")} {controlPanelUpdatedAt}
+                  </p>
                 </CardTitle>
               </CardHeader>
             </Card>
@@ -1038,23 +1138,17 @@ export function App() {
           <Tabs defaultValue="system">
             <TabsList className="w-full justify-start">
               <TabsTrigger value="system">
-                <Settings2 />
-                Git AI 设置
-              </TabsTrigger>
+                <Settings2 />{t("Git AI 设置")}</TabsTrigger>
               <TabsTrigger value="plugins">
-                <Puzzle />
-                插件管理
-              </TabsTrigger>
+                <Puzzle />{t("插件管理")}</TabsTrigger>
             </TabsList>
 
             <TabsContent value="system" className="mt-4">
               <Card>
                 <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div className="space-y-1">
-                    <CardTitle>Git AI 原生设置</CardTitle>
-                    <CardDescription>
-                      写入 ~/.git-ai/config.json，未知字段会原样保留。
-                    </CardDescription>
+                    <CardTitle>{t("Git AI 原生设置")}</CardTitle>
+                    <CardDescription>{t("写入 ~/.git-ai/config.json，未知字段会原样保留。")}</CardDescription>
                   </div>
                   <Button
                     variant="outline"
@@ -1062,7 +1156,7 @@ export function App() {
                     onClick={() => void viewPersistedConfig("gitAi")}
                     disabled={viewingConfig}
                   >
-                    {viewingConfig ? "读取中..." : "查看配置"}
+                    {viewingConfig ? t("读取中...") : t("查看配置")}
                   </Button>
                 </CardHeader>
                 <CardContent className="space-y-6">
@@ -1072,8 +1166,8 @@ export function App() {
                       title="Git AI"
                       description={
                         policy.git_ai_enabled
-                          ? "已开启：按当前插件策略处理并转发 Git AI 上报"
-                          : "已暂停：全部 Git AI 上报会在本机拦截，恢复后继续按原策略处理"
+                          ? t("已开启：按当前插件策略处理并转发 Git AI 上报")
+                          : t("已暂停：全部 Git AI 上报会在本机拦截，恢复后继续按原策略处理")
                       }
                       checked={policy.git_ai_enabled}
                       onCheckedChange={(checked) =>
@@ -1082,8 +1176,8 @@ export function App() {
                     />
                     <SettingSwitch
                       id="auto-updates"
-                      title="自动更新"
-                      description="检测到稳定版本后自动安装"
+                      title={t("自动更新")}
+                      description={t("检测到稳定版本后自动安装")}
                       checked={!gitAi.disable_auto_updates}
                       onCheckedChange={(checked) =>
                         markGitAi({
@@ -1094,8 +1188,8 @@ export function App() {
                     />
                     <SettingSwitch
                       id="version-checks"
-                      title="版本检查"
-                      description="在 fetch、pull、push 时检查版本"
+                      title={t("版本检查")}
+                      description={t("在 fetch、pull、push 时检查版本")}
                       checked={!gitAi.disable_version_checks}
                       onCheckedChange={(checked) =>
                         markGitAi({
@@ -1106,8 +1200,8 @@ export function App() {
                     />
                     <SettingSwitch
                       id="oss-telemetry"
-                      title="上游 OSS 遥测"
-                      description="控制官方版的 Sentry/PostHog 遥测，不等同于细粒度事件过滤"
+                      title={t("上游 OSS 遥测")}
+                      description={t("控制官方版的 Sentry/PostHog 遥测，不等同于细粒度事件过滤")}
                       checked={gitAi.telemetry_oss !== "off"}
                       onCheckedChange={(checked) =>
                         markGitAi({
@@ -1119,7 +1213,7 @@ export function App() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="git-path">Git 可执行文件</Label>
+                    <Label htmlFor="git-path">{t("Git 可执行文件")}</Label>
                     <Input
                       id="git-path"
                       className="font-mono"
@@ -1132,10 +1226,8 @@ export function App() {
 
                   <div className="grid gap-6 md:grid-cols-2">
                     <div className="space-y-2">
-                      <Label htmlFor="exclude-repositories">排除的仓库</Label>
-                      <p className="text-sm text-muted-foreground">
-                        每行一个远程地址、路径或通配符。匹配后 Git AI 整体停用。
-                      </p>
+                      <Label htmlFor="exclude-repositories">{t("排除的仓库")}</Label>
+                      <p className="text-sm text-muted-foreground">{t("每行一个远程地址、路径或通配符。匹配后 Git AI 整体停用。")}</p>
                       <Textarea
                         id="exclude-repositories"
                         className="min-h-44 font-mono text-xs"
@@ -1151,12 +1243,8 @@ export function App() {
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="exclude-prompts">
-                        不保存提示词的仓库
-                      </Label>
-                      <p className="text-sm text-muted-foreground">
-                        每行一个规则，只影响提示词与会话内容。
-                      </p>
+                      <Label htmlFor="exclude-prompts">{t("不保存提示词的仓库")}</Label>
+                      <p className="text-sm text-muted-foreground">{t("每行一个规则，只影响提示词与会话内容。")}</p>
                       <Textarea
                         id="exclude-prompts"
                         className="min-h-44 font-mono text-xs"
@@ -1180,11 +1268,11 @@ export function App() {
               <Card size="sm">
                 <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
                   <div className="space-y-1">
-                    <CardTitle>Git AI 运行兼容性</CardTitle>
+                    <CardTitle>{t("Git AI 运行兼容性")}</CardTitle>
                     <CardDescription>
                       {runtime.distribution === "upstream-oss"
-                        ? "检测到官方上游版：原生设置生效，但官方版没有 custom_metrics 扩展点，下面的仓库和 Skill 细粒度上报规则不会接管 /worker/metrics/upload。仓库插件可以添加多个，主机规则重叠时按列表顺序使用第一个命中插件。"
-                        : "检测到 custom_metrics 定制版：仓库、Skill、数据类型和字段规则会在请求离开本机前执行。仓库插件可以添加多个，主机规则重叠时按列表顺序使用第一个命中插件。"}
+                        ? t("检测到官方上游版：原生设置生效，但官方版没有 custom_metrics 扩展点，下面的仓库和 Skill 细粒度上报规则不会接管 /worker/metrics/upload。仓库插件可以添加多个，主机规则重叠时按列表顺序使用第一个命中插件。")
+                        : t("检测到 custom_metrics 定制版：仓库、Skill、数据类型和字段规则会在请求离开本机前执行。仓库插件可以添加多个，主机规则重叠时按列表顺序使用第一个命中插件。")}
                     </CardDescription>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
@@ -1194,7 +1282,7 @@ export function App() {
                       onClick={() => void viewPersistedConfig("policy")}
                       disabled={viewingConfig}
                     >
-                      {viewingConfig ? "读取中..." : "查看配置"}
+                      {viewingConfig ? t("读取中...") : t("查看配置")}
                     </Button>
                     <Badge
                       variant={
@@ -1202,8 +1290,8 @@ export function App() {
                       }
                     >
                       {runtime.granularFilterActive
-                        ? "细粒度过滤已接管"
-                        : "仅原生配置兼容"}
+                        ? t("细粒度过滤已接管")
+                        : t("仅原生配置兼容")}
                     </Badge>
                   </div>
                 </CardHeader>
@@ -1213,13 +1301,13 @@ export function App() {
                 <CardHeader className="gap-4 border-b bg-muted/30 sm:flex-row sm:items-center sm:justify-between">
                   <div className="space-y-2">
                     <Badge variant="secondary">
-                      <Activity />
-                      过滤观察
-                    </Badge>
+                      <Activity />{t("过滤观察")}</Badge>
                     <div>
-                      <CardTitle>最近 24 小时的拦截记录</CardTitle>
+                      <CardTitle>{t("最近 24 小时的拦截记录")}</CardTitle>
                       <CardDescription>
-                        已拦截 {filterEvents.length} 次上报，按仓库和 Skill 汇总。
+                        {t("已拦截 {{count}} 次上报，按仓库和 Skill 汇总。", {
+                          count: filterEvents.length,
+                        })}
                       </CardDescription>
                     </div>
                   </div>
@@ -1231,14 +1319,12 @@ export function App() {
                   >
                     <RefreshCw
                       className={filterEventsLoading ? "animate-spin" : undefined}
-                    />
-                    刷新记录
-                  </Button>
+                    />{t("刷新记录")}</Button>
                 </CardHeader>
                 <CardContent className="space-y-4 pt-6">
                   {filterEventsError ? (
                     <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-                      无法读取过滤记录：{filterEventsError}
+                      {t("无法读取过滤记录：")}{filterEventsError}
                     </div>
                   ) : (
                     <div className="grid gap-4 md:grid-cols-2">
@@ -1249,7 +1335,9 @@ export function App() {
                         >
                           <div className="flex items-center justify-between border-b bg-muted/40 px-4 py-3">
                             <h3 className="text-sm font-medium">{title}</h3>
-                            <Badge variant="outline">{items.length} 项</Badge>
+                            <Badge variant="outline">
+                              {t("{{count}} 项", { count: items.length })}
+                            </Badge>
                           </div>
                           {items.length ? (
                             <ul className="divide-y">
@@ -1263,11 +1351,11 @@ export function App() {
                                       {item.name}
                                     </p>
                                     <p className="text-xs text-muted-foreground">
-                                      {formatFilterReason(item.reason)} · 最近 {formatAuditTime(item.timestamp)}
+                                      {formatFilterReason(item.reason, t)} · {t("最近")} {formatAuditTime(item.timestamp, locale, t("时间未知"))}
                                     </p>
                                   </div>
                                   <Badge variant="secondary" className="shrink-0">
-                                    {item.count} 次
+                                    {t("{{count}} 次", { count: item.count })}
                                   </Badge>
                                 </li>
                               ))}
@@ -1281,9 +1369,7 @@ export function App() {
                       ))}
                     </div>
                   )}
-                  <p className="text-xs text-muted-foreground">
-                    记录仅保存在本机 24 小时，包含时间、仓库或 Skill 标识及拦截原因，不保存上报正文。
-                  </p>
+                  <p className="text-xs text-muted-foreground">{t("记录仅保存在本机 24 小时，包含时间、仓库或 Skill 标识及拦截原因，不保存上报正文。")}</p>
                 </CardContent>
               </Card>
 
@@ -1298,11 +1384,9 @@ export function App() {
                   <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div className="min-w-0 flex-1 space-y-2">
                       <Badge variant="secondary">
-                        <GitBranch />
-                        仓库插件
-                      </Badge>
+                        <GitBranch />{t("仓库插件")}</Badge>
                       <Input
-                        aria-label="插件名称"
+                        aria-label={t("插件名称")}
                         className="max-w-md text-base font-medium"
                         value={plugin.name}
                         onChange={(event) =>
@@ -1318,7 +1402,7 @@ export function App() {
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="flex items-center gap-2">
-                        <Label htmlFor={`plugin-${plugin.id}`}>启用</Label>
+                        <Label htmlFor={`plugin-${plugin.id}`}>{t("启用")}</Label>
                         <Switch
                           id={`plugin-${plugin.id}`}
                           checked={plugin.enabled}
@@ -1337,28 +1421,30 @@ export function App() {
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                aria-label={`删除插件 ${plugin.name}`}
+                                aria-label={t("删除插件 {{name}}", {
+                                  name: plugin.name,
+                                })}
                               >
                                 <Trash2 />
                               </Button>
                             </AlertDialogTrigger>
                           </TooltipTrigger>
-                          <TooltipContent>删除当前插件</TooltipContent>
+                          <TooltipContent>{t("删除当前插件")}</TooltipContent>
                         </Tooltip>
                         <AlertDialogContent>
                           <AlertDialogHeader>
-                            <AlertDialogTitle>删除仓库插件？</AlertDialogTitle>
+                            <AlertDialogTitle>{t("删除仓库插件？")}</AlertDialogTitle>
                             <AlertDialogDescription>
-                              将删除“{plugin.name}”的全部配置。保存更改前不会写入磁盘。
+                              {t("将删除“{{name}}”的全部配置。保存更改前不会写入磁盘。", {
+                                name: plugin.name,
+                              })}
                             </AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
-                            <AlertDialogCancel>取消</AlertDialogCancel>
+                            <AlertDialogCancel>{t("取消")}</AlertDialogCancel>
                             <AlertDialogAction
                               onClick={() => deletePlugin(plugin.id)}
-                            >
-                              删除
-                            </AlertDialogAction>
+                            >{t("删除")}</AlertDialogAction>
                           </AlertDialogFooter>
                         </AlertDialogContent>
                       </AlertDialog>
@@ -1367,8 +1453,8 @@ export function App() {
                   <CardContent className="space-y-6">
                     <SettingSwitch
                       id="default-allow"
-                      title="未匹配主机的仓库"
-                      description="控制未命中此插件主机规则的仓库是否允许原始上报"
+                      title={t("未匹配主机的仓库")}
+                      description={t("控制未命中此插件主机规则的仓库是否允许原始上报")}
                       checked={policy.default_allow_unmatched}
                       onCheckedChange={(checked) =>
                         markPolicy({
@@ -1382,8 +1468,8 @@ export function App() {
                       <div className="space-y-4">
                         <SettingSwitch
                           id={`global-${plugin.id}`}
-                          title="全部仓库（全局规则）"
-                          description="全局规则始终排在所有特定仓库规则之后，适合作为默认策略。"
+                          title={t("全部仓库（全局规则）")}
+                          description={t("全局规则始终排在所有特定仓库规则之后，适合作为默认策略。")}
                           checked={plugin.match.all_repositories}
                           onCheckedChange={(checked) =>
                             updatePlugin(plugin.id, (current) => ({
@@ -1396,10 +1482,8 @@ export function App() {
                           }
                         />
                         <div className="space-y-2">
-                          <Label htmlFor={`priority-${plugin.id}`}>特定规则优先级</Label>
-                          <p className="text-sm text-muted-foreground">
-                            数值越大越优先；同优先级按插件列表顺序匹配。
-                          </p>
+                          <Label htmlFor={`priority-${plugin.id}`}>{t("特定规则优先级")}</Label>
+                          <p className="text-sm text-muted-foreground">{t("数值越大越优先；同优先级按插件列表顺序匹配。")}</p>
                           <Input
                             id={`priority-${plugin.id}`}
                             type="number"
@@ -1419,12 +1503,8 @@ export function App() {
                         </div>
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor={`directory-${plugin.id}`}>
-                          Skill 上报目录
-                        </Label>
-                        <p className="text-sm text-muted-foreground">
-                          仅替换此插件允许上传的 Skill 路径。留空则保留原路径。
-                        </p>
+                        <Label htmlFor={`directory-${plugin.id}`}>{t("Skill 上报目录")}</Label>
+                        <p className="text-sm text-muted-foreground">{t("仅替换此插件允许上传的 Skill 路径。留空则保留原路径。")}</p>
                         <Input
                           id={`directory-${plugin.id}`}
                           className="font-mono"
@@ -1438,11 +1518,9 @@ export function App() {
                         />
                         <div className="rounded-lg border bg-muted/50 p-3">
                           <div className="flex items-center gap-2 text-sm font-medium">
-                            <FolderGit2 className="size-4" />
-                            上报目录预览
-                          </div>
+                            <FolderGit2 className="size-4" />{t("上报目录预览")}</div>
                           <p className="mt-2 break-all font-mono text-xs text-muted-foreground">
-                            {plugin.fixed_project_directory || "保留原路径"}
+                            {plugin.fixed_project_directory || t("保留原路径")}
                           </p>
                         </div>
                       </div>
@@ -1451,10 +1529,8 @@ export function App() {
                     {!plugin.match.all_repositories && (
                       <div className="grid gap-4 md:grid-cols-2">
                         <div className="space-y-2">
-                          <Label htmlFor={`hosts-${plugin.id}`}>匹配仓库主机</Label>
-                          <p className="text-sm text-muted-foreground">
-                            每行一条，可用 `github.com` 或 `*github.com*`。
-                          </p>
+                          <Label htmlFor={`hosts-${plugin.id}`}>{t("匹配仓库主机")}</Label>
+                          <p className="text-sm text-muted-foreground">{t("每行一条，可用 `github.com` 或 `*github.com*`。")}</p>
                           <Textarea
                             id={`hosts-${plugin.id}`}
                             className="min-h-28 font-mono text-xs"
@@ -1473,10 +1549,8 @@ export function App() {
                           />
                         </div>
                         <div className="space-y-2">
-                          <Label htmlFor={`repositories-${plugin.id}`}>匹配仓库</Label>
-                          <p className="text-sm text-muted-foreground">
-                            每行一条，可填 owner/repo、远程地址或通配符。
-                          </p>
+                          <Label htmlFor={`repositories-${plugin.id}`}>{t("匹配仓库")}</Label>
+                          <p className="text-sm text-muted-foreground">{t("每行一条，可填 owner/repo、远程地址或通配符。")}</p>
                           <Textarea
                             id={`repositories-${plugin.id}`}
                             className="min-h-28 font-mono text-xs"
@@ -1495,10 +1569,8 @@ export function App() {
                           />
                         </div>
                         <div className="space-y-2">
-                          <Label htmlFor={`directories-${plugin.id}`}>匹配项目目录</Label>
-                          <p className="text-sm text-muted-foreground">
-                            多条件会同时生效；可用 `/work/*` 缩小范围。
-                          </p>
+                          <Label htmlFor={`directories-${plugin.id}`}>{t("匹配项目目录")}</Label>
+                          <p className="text-sm text-muted-foreground">{t("多条件会同时生效；可用 `/work/*` 缩小范围。")}</p>
                           <Textarea
                             id={`directories-${plugin.id}`}
                             className="min-h-28 font-mono text-xs"
@@ -1517,10 +1589,8 @@ export function App() {
                           />
                         </div>
                         <div className="space-y-2">
-                          <Label htmlFor={`branches-${plugin.id}`}>匹配分支</Label>
-                          <p className="text-sm text-muted-foreground">
-                            每行一条，例如 main、release/* 或 feature/*。
-                          </p>
+                          <Label htmlFor={`branches-${plugin.id}`}>{t("匹配分支")}</Label>
+                          <p className="text-sm text-muted-foreground">{t("每行一条，例如 main、release/* 或 feature/*。")}</p>
                           <Textarea
                             id={`branches-${plugin.id}`}
                             className="min-h-28 font-mono text-xs"
@@ -1545,17 +1615,15 @@ export function App() {
 
                     <div className="space-y-3">
                       <div>
-                        <h3 className="text-sm font-medium">允许上传的数据</h3>
-                        <p className="text-sm text-muted-foreground">
-                          每类事件可单独启用，关闭时请求会在本机被拦截。
-                        </p>
+                        <h3 className="text-sm font-medium">{t("允许上传的数据")}</h3>
+                        <p className="text-sm text-muted-foreground">{t("每类事件可单独启用，关闭时请求会在本机被拦截。")}</p>
                       </div>
                       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                         {(Object.keys(EVENT_LABELS) as EventKey[]).map((key) => (
                           <PermissionSwitch
                             key={key}
                             id={`${plugin.id}-event-${key}`}
-                            label={EVENT_LABELS[key]}
+                            label={eventLabels[key]}
                             checked={plugin.allow[key]}
                             onCheckedChange={(checked) =>
                               updatePlugin(plugin.id, (current) => ({
@@ -1570,17 +1638,15 @@ export function App() {
 
                     <div className="space-y-3">
                       <div>
-                        <h3 className="text-sm font-medium">允许保留的字段</h3>
-                        <p className="text-sm text-muted-foreground">
-                          关闭的仓库、目录和分支字段会在请求离开本机前删除。
-                        </p>
+                        <h3 className="text-sm font-medium">{t("允许保留的字段")}</h3>
+                        <p className="text-sm text-muted-foreground">{t("关闭的仓库、目录和分支字段会在请求离开本机前删除。")}</p>
                       </div>
                       <div className="grid gap-3 sm:grid-cols-3">
                         {(Object.keys(FIELD_LABELS) as FieldKey[]).map((key) => (
                           <PermissionSwitch
                             key={key}
                             id={`${plugin.id}-field-${key}`}
-                            label={FIELD_LABELS[key]}
+                            label={fieldLabels[key]}
                             checked={plugin.fields[key]}
                             onCheckedChange={(checked) =>
                               updatePlugin(plugin.id, (current) => ({
@@ -1596,13 +1662,18 @@ export function App() {
                   <CardFooter className="justify-between border-t">
                     <Badge variant={plugin.enabled ? "outline" : "secondary"}>
                       {plugin.enabled
-                        ? `${Object.values(plugin.allow).filter(Boolean).length}/7 数据类型 · ${Object.values(plugin.fields).filter(Boolean).length}/3 字段`
-                        : "插件已停用"}
+                        ? t("{{allowed}}/7 数据类型 · {{fields}}/3 字段", {
+                            allowed: Object.values(plugin.allow).filter(Boolean).length,
+                            fields: Object.values(plugin.fields).filter(Boolean).length,
+                          })
+                        : t("插件已停用")}
                     </Badge>
                     <span className="text-xs text-muted-foreground">
                       {plugin.match.all_repositories
-                        ? "全局默认策略"
-                        : `特定规则 · 优先级 ${plugin.priority}`}
+                        ? t("全局默认策略")
+                        : t("特定规则 · 优先级 {{priority}}", {
+                            priority: plugin.priority,
+                          })}
                     </span>
                   </CardFooter>
                 </Card>
@@ -1613,17 +1684,13 @@ export function App() {
                   <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div className="space-y-2">
                       <Badge variant="secondary">
-                        <ListFilter />
-                        Skill 过滤插件
-                      </Badge>
-                      <CardTitle>Skill 关键词过滤</CardTitle>
-                      <CardDescription>
-                        根据 Skill 名称拦截指定类型的调用。
-                      </CardDescription>
+                        <ListFilter />{t("Skill 过滤插件")}</Badge>
+                      <CardTitle>{t("Skill 关键词过滤")}</CardTitle>
+                      <CardDescription>{t("根据 Skill 名称拦截指定类型的调用。")}</CardDescription>
                     </div>
                     <div className="flex items-center gap-2">
                       <div className="flex items-center gap-2">
-                        <Label htmlFor="skill-enabled">启用</Label>
+                        <Label htmlFor="skill-enabled">{t("启用")}</Label>
                         <Switch
                           id="skill-enabled"
                           checked={policy.skill_policy.enabled}
@@ -1645,28 +1712,22 @@ export function App() {
                               <Button
                                 variant="ghost"
                                 size="icon"
-                                aria-label="删除插件 Skill 过滤插件"
+                                aria-label={t("删除插件 Skill 过滤插件")}
                               >
                                 <Trash2 />
                               </Button>
                             </AlertDialogTrigger>
                           </TooltipTrigger>
-                          <TooltipContent>删除 Skill 过滤插件</TooltipContent>
+                          <TooltipContent>{t("删除 Skill 过滤插件")}</TooltipContent>
                         </Tooltip>
                         <AlertDialogContent>
                           <AlertDialogHeader>
-                            <AlertDialogTitle>
-                              删除 Skill 过滤插件？
-                            </AlertDialogTitle>
-                            <AlertDialogDescription>
-                              删除后关键词拦截将停用，现有关键词会保留，重新添加插件时可以继续使用。
-                            </AlertDialogDescription>
+                            <AlertDialogTitle>{t("删除 Skill 过滤插件？")}</AlertDialogTitle>
+                            <AlertDialogDescription>{t("删除后关键词拦截将停用，现有关键词会保留，重新添加插件时可以继续使用。")}</AlertDialogDescription>
                           </AlertDialogHeader>
                           <AlertDialogFooter>
-                            <AlertDialogCancel>取消</AlertDialogCancel>
-                            <AlertDialogAction onClick={deleteSkillPlugin}>
-                              删除
-                            </AlertDialogAction>
+                            <AlertDialogCancel>{t("取消")}</AlertDialogCancel>
+                            <AlertDialogAction onClick={deleteSkillPlugin}>{t("删除")}</AlertDialogAction>
                           </AlertDialogFooter>
                         </AlertDialogContent>
                       </AlertDialog>
@@ -1674,10 +1735,8 @@ export function App() {
                   </CardHeader>
                   <CardContent>
                     <div className="max-w-2xl space-y-2">
-                      <Label htmlFor="blocked-patterns">拦截关键词 / 正则</Label>
-                      <p className="text-sm text-muted-foreground">
-                        每行一个，不区分大小写。命中 skillName、skill 或 name 即拦截。
-                      </p>
+                      <Label htmlFor="blocked-patterns">{t("拦截关键词 / 正则")}</Label>
+                      <p className="text-sm text-muted-foreground">{t("每行一个，不区分大小写。命中 skillName、skill 或 name 即拦截。")}</p>
                       <Textarea
                         id="blocked-patterns"
                         className="min-h-72 font-mono text-xs"
@@ -1703,12 +1762,12 @@ export function App() {
                       }
                     >
                       {policy.skill_policy.enabled
-                        ? `${policy.skill_policy.blocked_patterns.length} 条拦截规则`
-                        : "插件已停用"}
+                        ? t("{{count}} 条拦截规则", {
+                            count: policy.skill_policy.blocked_patterns.length,
+                          })
+                        : t("插件已停用")}
                     </Badge>
-                    <span className="text-xs text-muted-foreground">
-                      仅处理 Skill 调用名称
-                    </span>
+                    <span className="text-xs text-muted-foreground">{t("仅处理 Skill 调用名称")}</span>
                   </CardFooter>
                 </Card>
               )}
@@ -1718,16 +1777,12 @@ export function App() {
                   <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div className="space-y-2">
                       <Badge variant="secondary">
-                        <ShieldAlert />
-                        敏感内容脱敏插件
-                      </Badge>
-                      <CardTitle>请求内容二次保护</CardTitle>
-                      <CardDescription>
-                        在请求离开本机前检测文本。不会保存命中的原始内容。
-                      </CardDescription>
+                        <ShieldAlert />{t("敏感内容脱敏插件")}</Badge>
+                      <CardTitle>{t("请求内容二次保护")}</CardTitle>
+                      <CardDescription>{t("在请求离开本机前检测文本。不会保存命中的原始内容。")}</CardDescription>
                     </div>
                     <div className="flex items-center gap-2">
-                      <Label htmlFor="sensitive-enabled">启用</Label>
+                      <Label htmlFor="sensitive-enabled">{t("启用")}</Label>
                       <Switch
                         id="sensitive-enabled"
                         checked={policy.sensitive_data_policy.enabled}
@@ -1744,7 +1799,7 @@ export function App() {
                       <Button
                         variant="ghost"
                         size="icon"
-                        aria-label="删除敏感内容脱敏插件"
+                        aria-label={t("删除敏感内容脱敏插件")}
                         onClick={() => uninstallPolicyPlugin("sensitive_data_policy")}
                       >
                         <Trash2 />
@@ -1754,7 +1809,7 @@ export function App() {
                   <CardContent className="space-y-6">
                     <div className="grid gap-4 md:grid-cols-2">
                       <div className="space-y-2">
-                        <Label htmlFor="sensitive-action">命中后的动作</Label>
+                        <Label htmlFor="sensitive-action">{t("命中后的动作")}</Label>
                         <select
                           id="sensitive-action"
                           className="h-9 w-full rounded-md border bg-background px-3 text-sm"
@@ -1769,16 +1824,16 @@ export function App() {
                             })
                           }
                         >
-                          <option value="redact">脱敏后继续上报</option>
-                          <option value="block">直接阻止上报</option>
+                          <option value="redact">{t("脱敏后继续上报")}</option>
+                          <option value="block">{t("直接阻止上报")}</option>
                         </select>
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="sensitive-patterns">自定义正则</Label>
+                        <Label htmlFor="sensitive-patterns">{t("自定义正则")}</Label>
                         <Textarea
                           id="sensitive-patterns"
                           className="min-h-24 font-mono text-xs"
-                          placeholder="每行一个正则"
+                          placeholder={t("每行一个正则")}
                           value={sensitivePatternsText}
                           onChange={(event) => {
                             const value = event.target.value
@@ -1796,19 +1851,17 @@ export function App() {
                     </div>
                     <div className="space-y-3">
                       <div>
-                        <h3 className="text-sm font-medium">内置识别规则</h3>
-                        <p className="text-sm text-muted-foreground">
-                          默认启用密钥、私钥和凭据；邮箱与手机号由你决定是否纳入。
-                        </p>
+                        <h3 className="text-sm font-medium">{t("内置识别规则")}</h3>
+                        <p className="text-sm text-muted-foreground">{t("默认启用密钥、私钥和凭据；邮箱与手机号由你决定是否纳入。")}</p>
                       </div>
                       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
                         {(
                           [
                             ["api_key", "API Key"],
-                            ["private_key", "私钥"],
-                            ["credential", "密码 / 凭据"],
-                            ["email", "邮箱"],
-                            ["phone", "手机号"],
+                            ["private_key", t("私钥")],
+                            ["credential", t("密码 / 凭据")],
+                            ["email", t("邮箱")],
+                            ["phone", t("手机号")],
                           ] as const
                         ).map(([key, label]) => (
                           <PermissionSwitch
@@ -1833,7 +1886,7 @@ export function App() {
                       </div>
                     </div>
                     <div className="space-y-3">
-                      <h3 className="text-sm font-medium">作用数据类型</h3>
+                      <h3 className="text-sm font-medium">{t("作用数据类型")}</h3>
                       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                         {(Object.keys(EVENT_LABELS) as EventKey[]).map((key) => (
                           <PermissionSwitch
@@ -1866,16 +1919,12 @@ export function App() {
                   <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">
                     <div className="space-y-2">
                       <Badge variant="secondary">
-                        <Bot />
-                        Agent / 模型治理插件
-                      </Badge>
-                      <CardTitle>允许名单与阻止规则</CardTitle>
-                      <CardDescription>
-                        允许名单支持通配符；审计模式只记录本地统计，阻止模式会拦截不合规上报。
-                      </CardDescription>
+                        <Bot />{t("Agent / 模型治理插件")}</Badge>
+                      <CardTitle>{t("允许名单与阻止规则")}</CardTitle>
+                      <CardDescription>{t("允许名单支持通配符；审计模式只记录本地统计，阻止模式会拦截不合规上报。")}</CardDescription>
                     </div>
                     <div className="flex items-center gap-2">
-                      <Label htmlFor="agent-model-enabled">启用</Label>
+                      <Label htmlFor="agent-model-enabled">{t("启用")}</Label>
                       <Switch
                         id="agent-model-enabled"
                         checked={policy.agent_model_policy.enabled}
@@ -1892,7 +1941,7 @@ export function App() {
                       <Button
                         variant="ghost"
                         size="icon"
-                        aria-label="删除 Agent / 模型治理插件"
+                        aria-label={t("删除 Agent / 模型治理插件")}
                         onClick={() => uninstallPolicyPlugin("agent_model_policy")}
                       >
                         <Trash2 />
@@ -1901,7 +1950,7 @@ export function App() {
                   </CardHeader>
                   <CardContent className="space-y-6">
                     <div className="max-w-md space-y-2">
-                      <Label htmlFor="agent-model-mode">治理模式</Label>
+                      <Label htmlFor="agent-model-mode">{t("治理模式")}</Label>
                       <select
                         id="agent-model-mode"
                         className="h-9 w-full rounded-md border bg-background px-3 text-sm"
@@ -1916,16 +1965,16 @@ export function App() {
                           })
                         }
                       >
-                        <option value="audit">仅审计，不阻止</option>
-                        <option value="block">命中规则时阻止</option>
+                        <option value="audit">{t("仅审计，不阻止")}</option>
+                        <option value="block">{t("命中规则时阻止")}</option>
                       </select>
                     </div>
                     <div className="grid gap-4 md:grid-cols-3">
                       {(
                         [
-                          ["allowed_agents", "允许的 Agent", "例如 codex、claude*"],
-                          ["allowed_models", "允许的模型", "例如 gpt-5*、claude-sonnet-*"],
-                          ["blocked_patterns", "阻止正则", "每行一个，不区分大小写"],
+                          ["allowed_agents", t("允许的 Agent"), t("例如 codex、claude*")],
+                          ["allowed_models", t("允许的模型"), t("例如 gpt-5*、claude-sonnet-*")],
+                          ["blocked_patterns", t("阻止正则"), t("每行一个，不区分大小写")],
                         ] as const
                       ).map(([key, label, placeholder]) => (
                         <div key={key} className="space-y-2">
@@ -1964,10 +2013,8 @@ export function App() {
                 <Card>
                   <CardContent className="flex min-h-40 flex-col items-center justify-center gap-2 text-center">
                     <Puzzle className="size-6 text-muted-foreground" />
-                    <p className="font-medium">还没有安装插件</p>
-                    <p className="text-sm text-muted-foreground">
-                      添加插件后，这里会出现对应类型的配置模块。
-                    </p>
+                    <p className="font-medium">{t("还没有安装插件")}</p>
+                    <p className="text-sm text-muted-foreground">{t("添加插件后，这里会出现对应类型的配置模块。")}</p>
                   </CardContent>
                 </Card>
               )}
@@ -1982,16 +2029,14 @@ export function App() {
                   >
                     <Plus />
                     {availablePluginTypes.length
-                      ? "添加插件"
-                      : "所有可用插件均已添加"}
+                      ? t("添加插件")
+                      : t("所有可用插件均已添加")}
                   </Button>
                 </DialogTrigger>
                 <DialogContent>
                   <DialogHeader>
-                    <DialogTitle>添加插件</DialogTitle>
-                    <DialogDescription>
-                      仓库插件可以添加多个；其余插件使用独立配置表单且每种只能添加一次。新插件会追加到当前列表最后。
-                    </DialogDescription>
+                    <DialogTitle>{t("添加插件")}</DialogTitle>
+                    <DialogDescription>{t("仓库插件可以添加多个；其余插件使用独立配置表单且每种只能添加一次。新插件会追加到当前列表最后。")}</DialogDescription>
                   </DialogHeader>
                   <div className="grid gap-2">
                     {availablePluginTypes.includes("repository") && (
@@ -2002,10 +2047,8 @@ export function App() {
                       >
                         <GitBranch className="size-5" />
                         <span className="space-y-1">
-                          <span className="block font-medium">仓库插件</span>
-                          <span className="block text-xs font-normal text-muted-foreground">
-                            配置仓库主机、上传类型、目录与字段脱敏
-                          </span>
+                          <span className="block font-medium">{t("仓库插件")}</span>
+                          <span className="block text-xs font-normal text-muted-foreground">{t("配置仓库主机、上传类型、目录与字段脱敏")}</span>
                         </span>
                       </Button>
                     )}
@@ -2017,12 +2060,8 @@ export function App() {
                       >
                         <ListFilter className="size-5" />
                         <span className="space-y-1">
-                          <span className="block font-medium">
-                            Skill 过滤插件
-                          </span>
-                          <span className="block text-xs font-normal text-muted-foreground">
-                            配置需要拦截的 Skill 名称关键词或正则
-                          </span>
+                          <span className="block font-medium">{t("Skill 过滤插件")}</span>
+                          <span className="block text-xs font-normal text-muted-foreground">{t("配置需要拦截的 Skill 名称关键词或正则")}</span>
                         </span>
                       </Button>
                     )}
@@ -2034,10 +2073,8 @@ export function App() {
                       >
                         <ShieldAlert className="size-5" />
                         <span className="space-y-1">
-                          <span className="block font-medium">敏感内容脱敏</span>
-                          <span className="block text-xs font-normal text-muted-foreground">
-                            检测密钥、私钥、凭据等文本，可脱敏或阻止上报
-                          </span>
+                          <span className="block font-medium">{t("敏感内容脱敏")}</span>
+                          <span className="block text-xs font-normal text-muted-foreground">{t("检测密钥、私钥、凭据等文本，可脱敏或阻止上报")}</span>
                         </span>
                       </Button>
                     )}
@@ -2049,10 +2086,8 @@ export function App() {
                       >
                         <Bot className="size-5" />
                         <span className="space-y-1">
-                          <span className="block font-medium">Agent / 模型治理</span>
-                          <span className="block text-xs font-normal text-muted-foreground">
-                            设置 Agent、模型允许名单与阻止规则
-                          </span>
+                          <span className="block font-medium">{t("Agent / 模型治理")}</span>
+                          <span className="block text-xs font-normal text-muted-foreground">{t("设置 Agent、模型允许名单与阻止规则")}</span>
                         </span>
                       </Button>
                     )}
@@ -2095,20 +2130,16 @@ export function App() {
               <CircleCheck
                 className={`size-4 ${dirty ? "text-amber-600" : "text-emerald-600"}`}
               />
-              {dirty ? "有未保存的更改" : "配置已同步"}
+              {dirty ? t("有未保存的更改") : t("配置已同步")}
             </div>
             <div className="flex flex-wrap gap-2">
               <Button variant="outline" onClick={runTest} disabled={busy}>
-                <FlaskConical />
-                验证配置
-              </Button>
+                <FlaskConical />{t("验证配置")}</Button>
               <Button variant="outline" onClick={restartFilter} disabled={busy}>
-                <RefreshCw className={busy ? "animate-spin" : ""} />
-                重启过滤服务
-              </Button>
+                <RefreshCw className={busy ? "animate-spin" : ""} />{t("重启过滤服务")}</Button>
               <Button onClick={saveConfig} disabled={busy || !dirty}>
                 {busy ? <LoaderCircle className="animate-spin" /> : <Save />}
-                保存更改
+                {t("保存更改")}
               </Button>
             </div>
           </div>
