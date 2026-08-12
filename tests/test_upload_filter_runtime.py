@@ -1,4 +1,7 @@
 import importlib.util
+import json
+from datetime import datetime, timedelta, timezone
+from tempfile import TemporaryDirectory
 import unittest
 from pathlib import Path
 
@@ -121,6 +124,46 @@ class UploadFilterRuntimeTests(unittest.TestCase):
         self.assertTrue(decision["blocked"])
         self.assertEqual(decision["reason"], "agent_model_policy")
         self.assertEqual(decision["findings"], ["unapproved_agent", "unapproved_model"])
+
+    def test_records_recent_filtered_repository_and_skill_without_url_credentials(self):
+        with TemporaryDirectory() as directory:
+            audit_path = Path(directory) / "filter_audit.jsonl"
+            original_path = RUNTIME.FILTER_AUDIT_PATH
+            try:
+                RUNTIME.FILTER_AUDIT_PATH = audit_path
+                RUNTIME.record_filter_event(
+                    "/skill-usage",
+                    {
+                        "repository": "https://token@example@git.example.com/team/project.git?access_token=secret#fragment",
+                        "skillName": "cloudflare-deploy",
+                    },
+                    "skill_pattern",
+                    "github",
+                )
+                events = RUNTIME.read_filter_audit_events(path=audit_path)
+            finally:
+                RUNTIME.FILTER_AUDIT_PATH = original_path
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["repositories"], ["https://git.example.com/team/project.git"])
+        self.assertEqual(events[0]["skills"], ["cloudflare-deploy"])
+        self.assertEqual(events[0]["reason"], "skill_pattern")
+
+    def test_ignores_expired_filter_audit_events(self):
+        with TemporaryDirectory() as directory:
+            audit_path = Path(directory) / "filter_audit.jsonl"
+            expired = {
+                "timestamp": (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
+                "eventType": "skill",
+                "reason": "skill_pattern",
+                "repositories": ["github.com/example/expired"],
+                "skills": ["expired-skill"],
+            }
+            audit_path.write_text(json.dumps(expired) + "\n", encoding="utf-8")
+
+            events = RUNTIME.read_filter_audit_events(path=audit_path)
+
+        self.assertEqual(events, [])
 
 if __name__ == "__main__":
     unittest.main()

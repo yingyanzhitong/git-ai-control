@@ -8,8 +8,10 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from fnmatch import fnmatchcase
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -36,6 +38,10 @@ PORT = 38741
 GIT_AI_ROOT = Path(os.environ.get("GIT_AI_ROOT", Path.home() / ".git-ai")).resolve()
 POLICY_CONFIG_PATH = GIT_AI_ROOT / "filter_plugins.json"
 UPSTREAM_CONFIG_PATH = GIT_AI_ROOT / "upstream_metrics.json"
+FILTER_AUDIT_PATH = GIT_AI_ROOT / "filter_audit.jsonl"
+FILTER_AUDIT_RETENTION = timedelta(hours=24)
+FILTER_AUDIT_MAX_EVENTS = 2_000
+FILTER_AUDIT_LOCK = threading.Lock()
 OWNER_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$")
 SKILL_KEYS = {"skillName", "skill", "name"}
 PATH_KEYS = {
@@ -267,6 +273,138 @@ def iter_skill_text(value):
     elif isinstance(value, list):
         for child in value:
             yield from iter_skill_text(child)
+
+
+def audit_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+
+
+def parse_audit_timestamp(value) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(timezone.utc)
+
+
+def audit_text(value, maximum: int = 240) -> str:
+    return str(value).strip()[:maximum]
+
+
+def audit_repository_label(value) -> str:
+    label = audit_text(value)
+    label = re.sub(r"([a-z][a-z0-9+.-]*://)[^/\s]*@", r"\1", label, flags=re.IGNORECASE)
+    label = re.sub(r"^[^@/\s]+@", "", label)
+    return label.split("?", 1)[0].split("#", 1)[0]
+
+
+def read_filter_audit_events(
+    *, now: datetime | None = None, path: Path | None = None
+) -> list[dict]:
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    cutoff = now.astimezone(timezone.utc) - FILTER_AUDIT_RETENTION
+    path = path or FILTER_AUDIT_PATH
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
+    events = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        timestamp = parse_audit_timestamp(event.get("timestamp"))
+        if timestamp is None or timestamp < cutoff:
+            continue
+        repositories = sorted(
+            {
+                label
+                for value in event.get("repositories", [])
+                if isinstance(value, str)
+                if (label := audit_repository_label(value))
+            }
+        )[:10]
+        skills = sorted(
+            {
+                label
+                for value in event.get("skills", [])
+                if isinstance(value, str)
+                if (label := audit_text(value, 160))
+            }
+        )[:10]
+        events.append(
+            {
+                "timestamp": timestamp.isoformat(timespec="seconds").replace("+00:00", "Z"),
+                "eventType": audit_text(event.get("eventType", ""), 80),
+                "reason": audit_text(event.get("reason", ""), 160),
+                "plugin": audit_text(event.get("plugin", ""), 80) or None,
+                "repositories": repositories,
+                "skills": skills,
+            }
+        )
+    return sorted(events, key=lambda event: event["timestamp"], reverse=True)[:FILTER_AUDIT_MAX_EVENTS]
+
+
+def write_filter_audit_events(events: list[dict], *, path: Path | None = None) -> None:
+    path = path or FILTER_AUDIT_PATH
+    temporary = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        temporary.write_text(
+            "".join(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n" for event in events),
+            encoding="utf-8",
+        )
+        if os.name != "nt":
+            os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    except OSError:
+        if temporary:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def record_filter_event(
+    endpoint_path: str, payload, reason: str, plugin: str | None = None
+) -> None:
+    event = {
+        "timestamp": audit_timestamp(),
+        "eventType": EVENT_TYPES.get(endpoint_path, ""),
+        "reason": reason,
+        "plugin": plugin,
+        "repositories": sorted(
+            {
+                label
+                for value in iter_repository_text(payload)
+                if (label := audit_repository_label(value))
+            }
+        )[:10],
+        "skills": sorted(
+            {
+                label
+                for value in iter_skill_text(payload)
+                if (label := audit_text(value, 160))
+            }
+        )[:10],
+    }
+    with FILTER_AUDIT_LOCK:
+        events = read_filter_audit_events()
+        events.append(event)
+        write_filter_audit_events(
+            sorted(events, key=lambda item: item["timestamp"], reverse=True)[:FILTER_AUDIT_MAX_EVENTS]
+        )
 
 
 def iter_path_text(value):
@@ -714,12 +852,17 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(body.decode("utf-8") or "{}")
         except json.JSONDecodeError:
-            self.send_filtered(endpoint_path, "invalid_json")
+            self.send_filtered(endpoint_path, "invalid_json", payload={})
             return
 
         decision = evaluate_request(endpoint_path, payload, body)
         if decision["blocked"]:
-            self.send_filtered(endpoint_path, decision["reason"], decision.get("plugin"))
+            self.send_filtered(
+                endpoint_path,
+                decision["reason"],
+                decision.get("plugin"),
+                payload,
+            )
             return
 
         upstreams, upstream_error = load_upstreams()
@@ -769,7 +912,14 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as error:
             self.send_json(502, {"code": -1, "data": None, "message": str(error)})
 
-    def send_filtered(self, endpoint_path: str, reason: str, plugin: str | None = None):
+    def send_filtered(
+        self,
+        endpoint_path: str,
+        reason: str,
+        plugin: str | None = None,
+        payload=None,
+    ):
+        record_filter_event(endpoint_path, payload or {}, reason, plugin)
         self.send_json(
             200,
             {

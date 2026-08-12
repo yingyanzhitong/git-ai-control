@@ -154,12 +154,37 @@ type RuntimeStatus = {
     nativeConfig: boolean
     granularUploadFilter: boolean
   }
+  filter?: {
+    ok?: boolean
+    error?: string
+  }
 }
 
 type ConfigResponse = {
   gitAi: Partial<GitAiConfig>
   policy: PolicyConfig
   runtime?: RuntimeStatus
+}
+
+type FilterAuditEvent = {
+  timestamp: string
+  eventType: string
+  reason: string
+  plugin: string | null
+  repositories: string[]
+  skills: string[]
+}
+
+type FilterAuditResponse = {
+  since: string
+  events: FilterAuditEvent[]
+}
+
+type FilterAuditSummary = {
+  name: string
+  count: number
+  timestamp: string
+  reason: string
 }
 
 const REPOSITORY_MATCH_FIELDS = [
@@ -246,6 +271,57 @@ function toAgentModelTexts(policy: AgentModelPolicy) {
   return Object.fromEntries(
     AGENT_MODEL_TEXT_FIELDS.map((field) => [field, toLines(policy[field])]),
   ) as Record<AgentModelTextField, string>
+}
+
+function summarizeFilterAuditEvents(
+  events: FilterAuditEvent[],
+  field: "repositories" | "skills",
+) {
+  const summaries = new Map<string, FilterAuditSummary>()
+  for (const event of events) {
+    for (const name of event[field]) {
+      const current = summaries.get(name)
+      if (!current) {
+        summaries.set(name, {
+          name,
+          count: 1,
+          timestamp: event.timestamp,
+          reason: event.reason,
+        })
+      } else {
+        current.count += 1
+        if (event.timestamp > current.timestamp) {
+          current.timestamp = event.timestamp
+          current.reason = event.reason
+        }
+      }
+    }
+  }
+  return [...summaries.values()].sort(
+    (left, right) =>
+      right.timestamp.localeCompare(left.timestamp) || right.count - left.count,
+  )
+}
+
+function formatAuditTime(value: string) {
+  const time = new Date(value)
+  if (Number.isNaN(time.getTime())) return "时间未知"
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(time)
+}
+
+function formatFilterReason(reason: string) {
+  if (reason === "skill_pattern") return "命中 Skill 规则"
+  if (reason === "default_deny") return "未匹配仓库默认拦截"
+  if (reason === "git_ai_paused") return "Git AI 已暂停"
+  if (reason === "sensitive_content") return "命中敏感内容规则"
+  if (reason === "agent_model_policy") return "命中 Agent / 模型规则"
+  if (reason.startsWith("plugin:")) return "命中仓库插件策略"
+  return reason || "已拦截"
 }
 
 function repositoryPluginOrderKey(pluginId: string) {
@@ -424,6 +500,9 @@ export function App() {
   >(() => toAgentModelTexts(DEFAULT_AGENT_MODEL_POLICY))
   const [policy, setPolicy] = useState<PolicyConfig | null>(null)
   const [runtime, setRuntime] = useState<RuntimeStatus>({ ok: false })
+  const [filterEvents, setFilterEvents] = useState<FilterAuditEvent[]>([])
+  const [filterEventsLoading, setFilterEventsLoading] = useState(false)
+  const [filterEventsError, setFilterEventsError] = useState("")
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
   const [addPluginOpen, setAddPluginOpen] = useState(false)
@@ -461,10 +540,35 @@ export function App() {
     }
   }, [])
 
+  const loadFilterEvents = useCallback(async () => {
+    setFilterEventsLoading(true)
+    try {
+      const response = await fetch("/api/filter-events", { cache: "no-store" })
+      const payload = await readResponse<FilterAuditResponse>(response)
+      setFilterEvents(Array.isArray(payload.events) ? payload.events : [])
+      setFilterEventsError("")
+    } catch (error) {
+      setFilterEventsError(
+        error instanceof Error ? error.message : "读取过滤记录失败",
+      )
+    } finally {
+      setFilterEventsLoading(false)
+    }
+  }, [])
+
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => void loadConfig())
     return () => window.cancelAnimationFrame(frame)
   }, [loadConfig])
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => void loadFilterEvents())
+    const interval = window.setInterval(() => void loadFilterEvents(), 30_000)
+    return () => {
+      window.cancelAnimationFrame(frame)
+      window.clearInterval(interval)
+    }
+  }, [loadFilterEvents])
 
   const enabledPlugins = useMemo(
     () => policy?.plugins.filter((plugin) => plugin.enabled) ?? [],
@@ -493,8 +597,32 @@ export function App() {
     () => new Map(policy?.plugin_order.map((key, index) => [key, index])),
     [policy?.plugin_order],
   )
+  const filteredRepositories = useMemo(
+    () => summarizeFilterAuditEvents(filterEvents, "repositories"),
+    [filterEvents],
+  )
+  const filteredSkills = useMemo(
+    () => summarizeFilterAuditEvents(filterEvents, "skills"),
+    [filterEvents],
+  )
+  const filterAuditSections = useMemo(
+    () => [
+      {
+        title: "仓库",
+        items: filteredRepositories,
+        emptyMessage: "尚未拦截包含仓库信息的上报",
+      },
+      {
+        title: "Skills",
+        items: filteredSkills,
+        emptyMessage: "尚未拦截 Skill 调用",
+      },
+    ],
+    [filteredRepositories, filteredSkills],
+  )
   const savedGitAiEnabled = runtime.gitAiEnabled ?? policy?.git_ai_enabled ?? true
   const hasPendingGitAiStatus = policy?.git_ai_enabled !== savedGitAiEnabled
+  const filterServiceOnline = runtime.filter?.ok === true
   const availablePluginTypes = useMemo(() => {
     const available: Array<
       "repository" | "skill_filter" | "sensitive_data" | "agent_model"
@@ -813,7 +941,14 @@ export function App() {
                 <ShieldCheck className="size-5" />
               </div>
               <div>
-                <h1 className="text-xl font-semibold">Git AI 配置中心</h1>
+                <div className="flex items-center gap-2">
+                  <h1 className="text-xl font-semibold">Git AI 配置中心</h1>
+                  {runtime.gitAiVersion && (
+                    <Badge variant="outline" className="font-mono text-xs font-normal">
+                      v{runtime.gitAiVersion}
+                    </Badge>
+                  )}
+                </div>
                 <p className="text-sm text-muted-foreground">
                   本机插件策略与上传权限
                 </p>
@@ -834,13 +969,12 @@ export function App() {
                 : runtime.ok
                   ? "定制版 · 过滤在线"
                   : "定制版 · 过滤异常"}
-              {runtime.gitAiVersion ? ` · ${runtime.gitAiVersion}` : ""}
             </Badge>
           </div>
         </header>
 
         <main className="mx-auto max-w-6xl space-y-6 px-4 py-6 sm:px-6">
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <Card size="sm">
               <CardHeader>
                 <CardDescription>已安装插件</CardDescription>
@@ -885,6 +1019,19 @@ export function App() {
                     : savedGitAiEnabled
                       ? "已开启"
                       : "已暂停"}
+                </CardTitle>
+              </CardHeader>
+            </Card>
+            <Card size="sm">
+              <CardHeader>
+                <CardDescription>过滤服务状态</CardDescription>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Activity
+                    className={`size-4 ${
+                      filterServiceOnline ? "text-emerald-600" : "text-destructive"
+                    }`}
+                  />
+                  {filterServiceOnline ? "已在线" : "已离线"}
                 </CardTitle>
               </CardHeader>
             </Card>
@@ -1062,6 +1209,84 @@ export function App() {
                     </Badge>
                   </div>
                 </CardHeader>
+              </Card>
+
+              <Card className="overflow-hidden">
+                <CardHeader className="gap-4 border-b bg-muted/30 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="space-y-2">
+                    <Badge variant="secondary">
+                      <Activity />
+                      过滤观察
+                    </Badge>
+                    <div>
+                      <CardTitle>最近 24 小时的拦截记录</CardTitle>
+                      <CardDescription>
+                        已拦截 {filterEvents.length} 次上报，按仓库和 Skill 汇总。
+                      </CardDescription>
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void loadFilterEvents()}
+                    disabled={filterEventsLoading}
+                  >
+                    <RefreshCw
+                      className={filterEventsLoading ? "animate-spin" : undefined}
+                    />
+                    刷新记录
+                  </Button>
+                </CardHeader>
+                <CardContent className="space-y-4 pt-6">
+                  {filterEventsError ? (
+                    <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                      无法读取过滤记录：{filterEventsError}
+                    </div>
+                  ) : (
+                    <div className="grid gap-4 md:grid-cols-2">
+                      {filterAuditSections.map(({ title, items, emptyMessage }) => (
+                        <section
+                          key={title}
+                          className="overflow-hidden rounded-lg border bg-background"
+                        >
+                          <div className="flex items-center justify-between border-b bg-muted/40 px-4 py-3">
+                            <h3 className="text-sm font-medium">{title}</h3>
+                            <Badge variant="outline">{items.length} 项</Badge>
+                          </div>
+                          {items.length ? (
+                            <ul className="divide-y">
+                              {items.map((item) => (
+                                <li
+                                  key={item.name}
+                                  className="flex items-start justify-between gap-3 px-4 py-3"
+                                >
+                                  <div className="min-w-0 space-y-1">
+                                    <p className="truncate font-mono text-xs font-medium">
+                                      {item.name}
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">
+                                      {formatFilterReason(item.reason)} · 最近 {formatAuditTime(item.timestamp)}
+                                    </p>
+                                  </div>
+                                  <Badge variant="secondary" className="shrink-0">
+                                    {item.count} 次
+                                  </Badge>
+                                </li>
+                              ))}
+                            </ul>
+                          ) : (
+                            <p className="px-4 py-8 text-center text-sm text-muted-foreground">
+                              {emptyMessage}
+                            </p>
+                          )}
+                        </section>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    记录仅保存在本机 24 小时，包含时间、仓库或 Skill 标识及拦截原因，不保存上报正文。
+                  </p>
+                </CardContent>
               </Card>
 
               <div className="flex flex-col gap-4">

@@ -1,6 +1,8 @@
 import copy
 import importlib.util
 import json
+from datetime import datetime, timedelta, timezone
+from tempfile import TemporaryDirectory
 import unittest
 from pathlib import Path
 
@@ -73,6 +75,49 @@ class ServerPolicyTests(unittest.TestCase):
 
         with self.assertRaisesRegex(SERVER.ConfigError, "最多配置 32 个"):
             SERVER.validate_policy_config(policy)
+
+    def test_reads_only_recent_filter_audit_events(self):
+        now = datetime(2026, 8, 12, 12, tzinfo=timezone.utc)
+        with TemporaryDirectory() as directory:
+            audit_path = Path(directory) / "filter_audit.jsonl"
+            audit_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "timestamp": "2026-08-12T11:30:00Z",
+                                "eventType": "skill",
+                                "reason": "skill_pattern",
+                                "plugin": "github",
+                                "repositories": ["github.com/example/recent"],
+                                "skills": ["cloudflare-deploy"],
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "timestamp": (now - timedelta(hours=25)).isoformat(),
+                                "eventType": "skill",
+                                "reason": "skill_pattern",
+                                "repositories": ["github.com/example/expired"],
+                                "skills": ["expired-skill"],
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            original_path = SERVER.FILTER_AUDIT_PATH
+            try:
+                SERVER.FILTER_AUDIT_PATH = audit_path
+                since, events = SERVER.read_filter_audit_events(now)
+            finally:
+                SERVER.FILTER_AUDIT_PATH = original_path
+
+        self.assertEqual(since, "2026-08-11T12:00:00Z")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["repositories"], ["github.com/example/recent"])
+        self.assertEqual(events[0]["skills"], ["cloudflare-deploy"])
 
 
 if __name__ == "__main__":

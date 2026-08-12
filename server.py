@@ -13,6 +13,7 @@ import subprocess
 import tempfile
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -28,6 +29,8 @@ NATIVE_CONFIG_PATH = GIT_AI_ROOT / "config.json"
 POLICY_CONFIG_PATH = GIT_AI_ROOT / "filter_plugins.json"
 CUSTOM_METRICS_PATH = GIT_AI_ROOT / "custom_metrics.json"
 FILTER_SCRIPT_PATH = GIT_AI_ROOT / "filters" / "plugin_filter_runtime.py"
+FILTER_AUDIT_PATH = GIT_AI_ROOT / "filter_audit.jsonl"
+FILTER_AUDIT_RETENTION = timedelta(hours=24)
 FILTER_HEALTH_URL = "http://127.0.0.1:38741/health"
 FILTER_MAC_LABEL = "com.git-ai.skill-usage-filter"
 FILTER_LINUX_UNIT = "git-ai-filter.service"
@@ -590,6 +593,59 @@ def runtime_status() -> dict:
     }
 
 
+def read_filter_audit_events(now: datetime | None = None) -> tuple[str, list[dict]]:
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now = now.astimezone(timezone.utc)
+    cutoff = now - FILTER_AUDIT_RETENTION
+    events = []
+    try:
+        lines = FILTER_AUDIT_PATH.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        lines = []
+
+    for line in lines:
+        try:
+            event = json.loads(line)
+            timestamp = datetime.fromisoformat(str(event.get("timestamp", "")).replace("Z", "+00:00"))
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        timestamp = timestamp.astimezone(timezone.utc)
+        if timestamp < cutoff or not isinstance(event, dict):
+            continue
+        repositories = event.get("repositories", [])
+        skills = event.get("skills", [])
+        events.append(
+            {
+                "timestamp": timestamp.isoformat(timespec="seconds").replace("+00:00", "Z"),
+                "eventType": str(event.get("eventType", ""))[:80],
+                "reason": str(event.get("reason", ""))[:160],
+                "plugin": str(event["plugin"])[:80] if event.get("plugin") else None,
+                "repositories": [
+                    str(value)[:240]
+                    for value in repositories
+                    if isinstance(value, str) and value.strip()
+                ][:10]
+                if isinstance(repositories, list)
+                else [],
+                "skills": [
+                    str(value)[:160]
+                    for value in skills
+                    if isinstance(value, str) and value.strip()
+                ][:10]
+                if isinstance(skills, list)
+                else [],
+            }
+        )
+    return (
+        cutoff.isoformat(timespec="seconds").replace("+00:00", "Z"),
+        sorted(events, key=lambda event: event["timestamp"], reverse=True)[:2_000],
+    )
+
+
 def run_self_test() -> dict:
     checks = []
     try:
@@ -693,6 +749,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/status":
             self.send_json(200, runtime_status())
+            return
+        if path == "/api/filter-events":
+            since, events = read_filter_audit_events()
+            self.send_json(200, {"since": since, "events": events})
             return
         self.serve_static(path)
 
