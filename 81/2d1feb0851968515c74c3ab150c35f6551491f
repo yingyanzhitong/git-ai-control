@@ -1,0 +1,34 @@
+static/assets/index-BcO5FeRx.js
+  s_2a907a618b7e8c::t_826b6e765e37e0 50
+static/index.html
+  s_2a907a618b7e8c::t_10cb459c1173c0 8
+CHANGELOG.md
+  s_2a907a618b7e8c::t_331180d9dfe122 5-10
+README.md
+  s_2a907a618b7e8c::t_28bef8e1a9d5c4 3,28,32
+frontend/git-ai-control-panel/package-lock.json
+  s_2a907a618b7e8c::t_4b0b416a2582c8 3,9
+frontend/git-ai-control-panel/package.json
+  s_2a907a618b7e8c::t_dac443d372f7f5 4-5
+package-lock.json
+  s_2a907a618b7e8c::t_781bef96ac3367 3,9
+package.json
+  s_2a907a618b7e8c::t_3204208e042058 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "812d1feb0851968515c74c3ab150c35f6551491f",
+  "prompts": {},
+  "logical_commit_id": "812d1feb0851968515c74c3ab150c35f6551491f",
+  "sessions": {
+    "s_2a907a618b7e8c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff059-4063-7373-be7c-398d5b6ae0e3",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "yingyanzhitong <yingyanzhitong@users.noreply.github.com>"
+    }
+  }
+}
