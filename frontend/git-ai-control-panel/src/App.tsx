@@ -943,11 +943,9 @@ export function App() {
               <div>
                 <div className="flex items-center gap-2">
                   <h1 className="text-xl font-semibold">Git AI 配置中心</h1>
-                  {runtime.gitAiVersion && (
-                    <Badge variant="outline" className="font-mono text-xs font-normal">
-                      v{runtime.gitAiVersion}
-                    </Badge>
-                  )}
+                  <Badge variant="outline" className="font-mono text-xs font-normal">
+                    v{__CONTROL_PANEL_VERSION__}
+                  </Badge>
                 </div>
                 <p className="text-sm text-muted-foreground">
                   本机插件策略与上传权限
