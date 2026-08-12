@@ -4,10 +4,11 @@ import tailwindcss from "@tailwindcss/vite"
 import react from "@vitejs/plugin-react"
 import { defineConfig } from "vite"
 
-const controlPanelVersion = JSON.parse(
+const controlPanelMetadata = JSON.parse(
   fs.readFileSync(path.resolve(__dirname, "package.json"), "utf8"),
-).version
-const controlPanelUpdatedAt = new Date().toISOString()
+) as { version: string; gitAiControlUpdatedAt: string }
+const controlPanelVersion = controlPanelMetadata.version
+const controlPanelUpdatedAt = controlPanelMetadata.gitAiControlUpdatedAt
 
 // https://vite.dev/config/
 export default defineConfig({
