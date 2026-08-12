@@ -1,0 +1,46 @@
+frontend/git-ai-control-panel/src/App.tsx
+  s_d7ba22cde5440c::t_8299ebeca74c35 946-948
+frontend/git-ai-control-panel/src/vite-env.d.ts
+  s_d7ba22cde5440c::t_3d25c0f8d42839 1-3
+frontend/git-ai-control-panel/vite.config.ts
+  s_d7ba22cde5440c::t_18f59a9dbecdc7 1,7-10,14-16
+static/assets/index-t5Osu3Sa.js
+  s_2a907a618b7e8c::t_a8d6d6e5aa657b 50
+static/index.html
+  s_2a907a618b7e8c::t_5574e2b54eea7d 8
+CHANGELOG.md
+  s_2a907a618b7e8c::t_228b16241229b5 5-10
+frontend/git-ai-control-panel/package-lock.json
+  s_2a907a618b7e8c::t_21fd1645cb7514 3,9
+frontend/git-ai-control-panel/package.json
+  s_2a907a618b7e8c::t_95e8b28083659e 4
+package-lock.json
+  s_2a907a618b7e8c::t_e21dac9fda1687 3,9
+package.json
+  s_2a907a618b7e8c::t_092ba391afee4b 3
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "ed67b8e946b8bb623ffadf0040ab5d7a14f95f3f",
+  "prompts": {},
+  "logical_commit_id": "ed67b8e946b8bb623ffadf0040ab5d7a14f95f3f",
+  "sessions": {
+    "s_2a907a618b7e8c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff059-4063-7373-be7c-398d5b6ae0e3",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "yingyanzhitong <yingyanzhitong@users.noreply.github.com>"
+    },
+    "s_d7ba22cde5440c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019ff022-3156-7dc0-ad76-351cac1c8912",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "yingyanzhitong <yingyanzhitong@users.noreply.github.com>"
+    }
+  }
+}
