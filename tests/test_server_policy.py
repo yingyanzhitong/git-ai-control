@@ -66,6 +66,25 @@ class ServerPolicyTests(unittest.TestCase):
         self.assertNotIn("usage_dashboard", normalized)
         self.assertEqual(normalized["plugin_order"], ["repository:github", "skill_filter"])
 
+    def test_validates_recent_directory_guard_lists(self):
+        policy = example_policy()
+        policy["skill_policy"]["recent_directory_guard"] = {
+            "enabled": True,
+            "allowlist_patterns": ["floorplan-.*"],
+            "blocklist_patterns": ["private-skill"],
+        }
+
+        normalized = SERVER.validate_policy_config(policy)
+
+        self.assertEqual(
+            normalized["skill_policy"]["recent_directory_guard"]["allowlist_patterns"],
+            ["floorplan-.*"],
+        )
+        self.assertEqual(
+            normalized["skill_policy"]["recent_directory_guard"]["blocklist_patterns"],
+            ["private-skill"],
+        )
+
     def test_rejects_more_than_thirty_two_repository_plugins(self):
         policy = example_policy()
         template = policy["plugins"][0]

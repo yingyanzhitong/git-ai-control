@@ -131,6 +131,12 @@ type AgentModelPolicy = {
   blocked_patterns: string[]
 }
 
+type RecentDirectoryGuard = {
+  enabled: boolean
+  allowlist_patterns: string[]
+  blocklist_patterns: string[]
+}
+
 type PolicyConfig = {
   version: 1 | 2
   git_ai_enabled: boolean
@@ -139,6 +145,7 @@ type PolicyConfig = {
     installed: boolean
     enabled: boolean
     blocked_patterns: string[]
+    recent_directory_guard: RecentDirectoryGuard
   }
   plugins: RepositoryPlugin[]
   plugin_order: string[]
@@ -245,6 +252,12 @@ const DEFAULT_AGENT_MODEL_POLICY: AgentModelPolicy = {
   blocked_patterns: [],
 }
 
+const DEFAULT_RECENT_DIRECTORY_GUARD: RecentDirectoryGuard = {
+  enabled: true,
+  allowlist_patterns: [],
+  blocklist_patterns: [],
+}
+
 function toLines(value: string[] | undefined) {
   return Array.isArray(value) ? value.join("\n") : ""
 }
@@ -332,6 +345,8 @@ function formatUpdatedAt(value: string, locale: Locale, unknownLabel: string) {
 
 function formatFilterReason(reason: string, t: (source: string) => string) {
   if (reason === "skill_pattern") return t("命中 Skill 规则")
+  if (reason === "recent_directory_skill_hold") return t("新目录观察期")
+  if (reason === "recent_directory_skill_blocklist") return t("新目录黑名单")
   if (reason === "default_deny") return t("未匹配仓库默认拦截")
   if (reason === "git_ai_paused") return t("Git AI 已暂停")
   if (reason === "sensitive_content") return t("命中敏感内容规则")
@@ -379,6 +394,14 @@ function normalizePolicy(value: PolicyConfig): PolicyConfig {
       installed: value.skill_policy.installed ?? true,
       enabled: value.skill_policy.enabled,
       blocked_patterns: value.skill_policy.blocked_patterns,
+      recent_directory_guard: {
+        ...DEFAULT_RECENT_DIRECTORY_GUARD,
+        ...value.skill_policy.recent_directory_guard,
+        allowlist_patterns:
+          value.skill_policy.recent_directory_guard?.allowlist_patterns ?? [],
+        blocklist_patterns:
+          value.skill_policy.recent_directory_guard?.blocklist_patterns ?? [],
+      },
     },
     plugins: value.plugins.map((plugin) => ({
       ...plugin,
@@ -521,6 +544,10 @@ export function App() {
   const [excludeRepositoriesText, setExcludeRepositoriesText] = useState("")
   const [excludePromptsText, setExcludePromptsText] = useState("")
   const [skillBlockedPatternsText, setSkillBlockedPatternsText] = useState("")
+  const [recentDirectoryAllowlistText, setRecentDirectoryAllowlistText] =
+    useState("")
+  const [recentDirectoryBlocklistText, setRecentDirectoryBlocklistText] =
+    useState("")
   const [repositoryMatchTexts, setRepositoryMatchTexts] = useState<
     Record<string, string>
   >({})
@@ -566,6 +593,12 @@ export function App() {
       const nextPolicy = normalizePolicy(payload.policy)
       setSkillBlockedPatternsText(
         toLines(nextPolicy.skill_policy.blocked_patterns),
+      )
+      setRecentDirectoryAllowlistText(
+        toLines(nextPolicy.skill_policy.recent_directory_guard.allowlist_patterns),
+      )
+      setRecentDirectoryBlocklistText(
+        toLines(nextPolicy.skill_policy.recent_directory_guard.blocklist_patterns),
       )
       setRepositoryMatchTexts(toRepositoryMatchTexts(nextPolicy.plugins))
       setSensitivePatternsText(
@@ -886,6 +919,12 @@ export function App() {
       const nextPolicy = normalizePolicy(payload.policy)
       setSkillBlockedPatternsText(
         toLines(nextPolicy.skill_policy.blocked_patterns),
+      )
+      setRecentDirectoryAllowlistText(
+        toLines(nextPolicy.skill_policy.recent_directory_guard.allowlist_patterns),
+      )
+      setRecentDirectoryBlocklistText(
+        toLines(nextPolicy.skill_policy.recent_directory_guard.blocklist_patterns),
       )
       setRepositoryMatchTexts(toRepositoryMatchTexts(nextPolicy.plugins))
       setSensitivePatternsText(
@@ -1734,25 +1773,99 @@ export function App() {
                     </div>
                   </CardHeader>
                   <CardContent>
-                    <div className="max-w-2xl space-y-2">
-                      <Label htmlFor="blocked-patterns">{t("拦截关键词 / 正则")}</Label>
-                      <p className="text-sm text-muted-foreground">{t("每行一个，不区分大小写。命中 skillName、skill 或 name 即拦截。")}</p>
-                      <Textarea
-                        id="blocked-patterns"
-                        className="min-h-72 font-mono text-xs"
-                        value={skillBlockedPatternsText}
-                        onChange={(event) => {
-                          const nextText = event.target.value
-                          setSkillBlockedPatternsText(nextText)
-                          markPolicy({
-                            ...policy,
-                            skill_policy: {
-                              ...policy.skill_policy,
-                              blocked_patterns: fromLines(nextText),
-                            },
-                          })
-                        }}
-                      />
+                    <div className="max-w-2xl space-y-6">
+                      <div className="space-y-2">
+                        <Label htmlFor="blocked-patterns">{t("拦截关键词 / 正则")}</Label>
+                        <p className="text-sm text-muted-foreground">{t("每行一个，不区分大小写。命中 skillName、skill 或 name 即拦截。")}</p>
+                        <Textarea
+                          id="blocked-patterns"
+                          className="min-h-72 font-mono text-xs"
+                          value={skillBlockedPatternsText}
+                          onChange={(event) => {
+                            const nextText = event.target.value
+                            setSkillBlockedPatternsText(nextText)
+                            markPolicy({
+                              ...policy,
+                              skill_policy: {
+                                ...policy.skill_policy,
+                                blocked_patterns: fromLines(nextText),
+                              },
+                            })
+                          }}
+                        />
+                      </div>
+                      <div className="space-y-4 border-t pt-6">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="space-y-1">
+                            <Label htmlFor="recent-directory-guard">{t("新目录观察期")}</Label>
+                            <p className="text-sm text-muted-foreground">
+                              {t("目录创建未满 7 天的 Skill 首次上报会拦截 24 小时；到期未处理则自动放行。")}
+                            </p>
+                          </div>
+                          <Switch
+                            id="recent-directory-guard"
+                            checked={policy.skill_policy.recent_directory_guard.enabled}
+                            onCheckedChange={(checked) =>
+                              markPolicy({
+                                ...policy,
+                                skill_policy: {
+                                  ...policy.skill_policy,
+                                  recent_directory_guard: {
+                                    ...policy.skill_policy.recent_directory_guard,
+                                    enabled: checked,
+                                  },
+                                },
+                              })
+                            }
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="recent-directory-allowlist">{t("观察期白名单")}</Label>
+                          <p className="text-sm text-muted-foreground">{t("每行一个 Skill 名称或正则；命中后立即放行新目录观察期。")}</p>
+                          <Textarea
+                            id="recent-directory-allowlist"
+                            className="min-h-28 font-mono text-xs"
+                            value={recentDirectoryAllowlistText}
+                            onChange={(event) => {
+                              const nextText = event.target.value
+                              setRecentDirectoryAllowlistText(nextText)
+                              markPolicy({
+                                ...policy,
+                                skill_policy: {
+                                  ...policy.skill_policy,
+                                  recent_directory_guard: {
+                                    ...policy.skill_policy.recent_directory_guard,
+                                    allowlist_patterns: fromLines(nextText),
+                                  },
+                                },
+                              })
+                            }}
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="recent-directory-blocklist">{t("Skill 黑名单")}</Label>
+                          <p className="text-sm text-muted-foreground">{t("每行一个 Skill 名称或正则；命中后持续拦截，不受 24 小时观察期限制。")}</p>
+                          <Textarea
+                            id="recent-directory-blocklist"
+                            className="min-h-28 font-mono text-xs"
+                            value={recentDirectoryBlocklistText}
+                            onChange={(event) => {
+                              const nextText = event.target.value
+                              setRecentDirectoryBlocklistText(nextText)
+                              markPolicy({
+                                ...policy,
+                                skill_policy: {
+                                  ...policy.skill_policy,
+                                  recent_directory_guard: {
+                                    ...policy.skill_policy.recent_directory_guard,
+                                    blocklist_patterns: fromLines(nextText),
+                                  },
+                                },
+                              })
+                            }}
+                          />
+                        </div>
+                      </div>
                     </div>
                   </CardContent>
                   <CardFooter className="justify-between border-t">

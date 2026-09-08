@@ -125,6 +125,64 @@ class UploadFilterRuntimeTests(unittest.TestCase):
         self.assertEqual(decision["reason"], "agent_model_policy")
         self.assertEqual(decision["findings"], ["unapproved_agent", "unapproved_model"])
 
+    def test_recent_directory_skill_is_held_for_twenty_four_hours(self):
+        policy = RUNTIME.clone_default_policy()
+        policy["plugins"] = []
+        now = datetime(2026, 9, 9, 12, tzinfo=timezone.utc)
+        with TemporaryDirectory() as directory:
+            state_path = Path(directory) / "recent_skill_holds.json"
+            original_created_at = RUNTIME.directory_created_at
+            try:
+                RUNTIME.directory_created_at = lambda _: now - timedelta(days=1)
+                first = RUNTIME.recent_directory_skill_guard(
+                    {"cwd": directory, "skillName": "floorplan-digitization"},
+                    policy["skill_policy"],
+                    now=now,
+                    state_path=state_path,
+                )
+                released = RUNTIME.recent_directory_skill_guard(
+                    {"cwd": directory, "skillName": "floorplan-digitization"},
+                    policy["skill_policy"],
+                    now=now + timedelta(hours=24),
+                    state_path=state_path,
+                )
+            finally:
+                RUNTIME.directory_created_at = original_created_at
+
+        self.assertEqual(first, "recent_directory_skill_hold")
+        self.assertIsNone(released)
+
+    def test_recent_directory_skill_allowlist_bypasses_hold_and_blocklist_wins(self):
+        policy = RUNTIME.clone_default_policy()
+        policy["skill_policy"]["recent_directory_guard"] = {
+            "enabled": True,
+            "allowlist_patterns": ["floorplan-.*"],
+            "blocklist_patterns": ["secret-skill"],
+        }
+        now = datetime(2026, 9, 9, 12, tzinfo=timezone.utc)
+        with TemporaryDirectory() as directory:
+            state_path = Path(directory) / "recent_skill_holds.json"
+            original_created_at = RUNTIME.directory_created_at
+            try:
+                RUNTIME.directory_created_at = lambda _: now - timedelta(days=1)
+                allowed = RUNTIME.recent_directory_skill_guard(
+                    {"cwd": directory, "skillName": "floorplan-digitization"},
+                    policy["skill_policy"],
+                    now=now,
+                    state_path=state_path,
+                )
+                blocked = RUNTIME.recent_directory_skill_guard(
+                    {"cwd": directory, "skillName": "secret-skill"},
+                    policy["skill_policy"],
+                    now=now,
+                    state_path=state_path,
+                )
+            finally:
+                RUNTIME.directory_created_at = original_created_at
+
+        self.assertIsNone(allowed)
+        self.assertEqual(blocked, "recent_directory_skill_blocklist")
+
     def test_records_recent_filtered_repository_and_skill_without_url_credentials(self):
         with TemporaryDirectory() as directory:
             audit_path = Path(directory) / "filter_audit.jsonl"

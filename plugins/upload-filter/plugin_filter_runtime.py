@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -39,9 +40,14 @@ GIT_AI_ROOT = Path(os.environ.get("GIT_AI_ROOT", Path.home() / ".git-ai")).resol
 POLICY_CONFIG_PATH = GIT_AI_ROOT / "filter_plugins.json"
 UPSTREAM_CONFIG_PATH = GIT_AI_ROOT / "upstream_metrics.json"
 FILTER_AUDIT_PATH = GIT_AI_ROOT / "filter_audit.jsonl"
+RECENT_SKILL_HOLD_PATH = GIT_AI_ROOT / "recent_skill_holds.json"
 FILTER_AUDIT_RETENTION = timedelta(hours=24)
 FILTER_AUDIT_MAX_EVENTS = 2_000
 FILTER_AUDIT_LOCK = threading.Lock()
+RECENT_SKILL_HOLD_LOCK = threading.Lock()
+RECENT_DIRECTORY_MAX_AGE = timedelta(days=7)
+RECENT_SKILL_HOLD_DURATION = timedelta(hours=24)
+RECENT_SKILL_HOLD_RETENTION = timedelta(days=7)
 OWNER_REPOSITORY_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?$")
 SKILL_KEYS = {"skillName", "skill", "name"}
 PATH_KEYS = {
@@ -137,6 +143,11 @@ DEFAULT_POLICY_CONFIG = {
             "cloudflare",
             "cloud-flare",
         ],
+        "recent_directory_guard": {
+            "enabled": True,
+            "allowlist_patterns": [],
+            "blocklist_patterns": [],
+        },
     },
     "plugins": [
         {
@@ -273,6 +284,15 @@ def iter_skill_text(value):
     elif isinstance(value, list):
         for child in value:
             yield from iter_skill_text(child)
+
+
+def skill_names(payload) -> list[str]:
+    names = set()
+    for value in iter_skill_text(payload):
+        name = audit_text(value, 160)
+        if name:
+            names.add(name)
+    return sorted(names)
 
 
 def audit_timestamp() -> str:
@@ -660,6 +680,148 @@ def matches_allowlist(value: str, patterns) -> bool:
     return any(selector_matches(pattern, [value]) for pattern in patterns)
 
 
+def compile_skill_patterns(patterns) -> list[re.Pattern]:
+    compiled = []
+    for pattern in patterns:
+        try:
+            compiled.append(re.compile(str(pattern), re.IGNORECASE))
+        except re.error:
+            continue
+    return compiled
+
+
+def directory_created_at(path: Path) -> datetime | None:
+    try:
+        metadata = path.stat()
+    except OSError:
+        return None
+
+    timestamp = getattr(metadata, "st_birthtime", None)
+    if timestamp is None and os.name == "nt":
+        timestamp = metadata.st_ctime
+    if timestamp is None:
+        return None
+    return datetime.fromtimestamp(timestamp, timezone.utc)
+
+
+def recent_payload_directories(payload, now: datetime) -> list[str]:
+    directories = set()
+    for value in iter_path_text(payload):
+        if not isinstance(value, str) or not value.strip():
+            continue
+        try:
+            path = Path(value).expanduser().resolve(strict=True)
+        except OSError:
+            continue
+        if not path.is_dir():
+            path = path.parent
+        created_at = directory_created_at(path)
+        if created_at is not None and now - created_at < RECENT_DIRECTORY_MAX_AGE:
+            directories.add(str(path))
+    return sorted(directories)
+
+
+def read_recent_skill_holds(path: Path = RECENT_SKILL_HOLD_PATH) -> dict[str, str]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    holds = value.get("holds", {}) if isinstance(value, dict) else {}
+    if not isinstance(holds, dict):
+        return {}
+    return {
+        key: timestamp
+        for key, timestamp in holds.items()
+        if isinstance(key, str) and parse_audit_timestamp(timestamp) is not None
+    }
+
+
+def write_recent_skill_holds(
+    holds: dict[str, str], path: Path = RECENT_SKILL_HOLD_PATH
+) -> None:
+    temporary = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        temporary.write_text(
+            json.dumps({"version": 1, "holds": holds}, ensure_ascii=False, indent=2)
+            + "\n",
+            encoding="utf-8",
+        )
+        if os.name != "nt":
+            os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    except OSError:
+        if temporary:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def recent_skill_hold_key(directory: str, skill: str) -> str:
+    return hashlib.sha256(f"{directory}\0{skill}".encode("utf-8")).hexdigest()
+
+
+def recent_directory_skill_guard(
+    payload,
+    skill_policy: dict,
+    *,
+    now: datetime | None = None,
+    state_path: Path = RECENT_SKILL_HOLD_PATH,
+) -> str | None:
+    if not skill_policy.get("installed", True) or not skill_policy.get("enabled", True):
+        return None
+    guard = skill_policy.get("recent_directory_guard", {})
+    if not isinstance(guard, dict):
+        return None
+    skills = skill_names(payload) or ["[unknown]"]
+    blocklist = compile_skill_patterns(guard.get("blocklist_patterns", []))
+    if any(pattern.search(skill) for skill in skills for pattern in blocklist):
+        return "recent_directory_skill_blocklist"
+    if not guard.get("enabled", True):
+        return None
+    allowlist = compile_skill_patterns(guard.get("allowlist_patterns", []))
+    if skills and all(any(pattern.search(skill) for pattern in allowlist) for skill in skills):
+        return None
+
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now = now.astimezone(timezone.utc)
+    directories = recent_payload_directories(payload, now)
+    if not directories:
+        return None
+
+    with RECENT_SKILL_HOLD_LOCK:
+        holds = read_recent_skill_holds(state_path)
+        holds = {
+            key: timestamp
+            for key, timestamp in holds.items()
+            if now - parse_audit_timestamp(timestamp) < RECENT_SKILL_HOLD_RETENTION
+        }
+        should_hold = False
+        for directory in directories:
+            for skill in skills:
+                key = recent_skill_hold_key(directory, skill)
+                first_seen = parse_audit_timestamp(holds.get(key))
+                if first_seen is None:
+                    first_seen = now
+                    holds[key] = audit_timestamp_from(now)
+                if now - first_seen < RECENT_SKILL_HOLD_DURATION:
+                    should_hold = True
+        write_recent_skill_holds(holds, state_path)
+    return "recent_directory_skill_hold" if should_hold else None
+
+
+def audit_timestamp_from(value: datetime) -> str:
+    return (
+        value.astimezone(timezone.utc)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z")
+    )
+
+
 def governance_findings(payload, policy: dict) -> list[str]:
     if not policy.get("installed", False) or not policy.get("enabled", False):
         return []
@@ -713,6 +875,16 @@ def evaluate_request(
         return {
             "blocked": True,
             "reason": "skill_pattern",
+            "payload": payload,
+            "plugin": plugin_id,
+            "config_error": config_error,
+        }
+    if event_type == "skill" and (
+        reason := recent_directory_skill_guard(payload, skill_policy)
+    ):
+        return {
+            "blocked": True,
+            "reason": reason,
             "payload": payload,
             "plugin": plugin_id,
             "config_error": config_error,

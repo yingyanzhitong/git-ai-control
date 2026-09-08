@@ -22,7 +22,12 @@
       "git-hub",
       "cloudflare",
       "cloud-flare"
-    ]
+    ],
+    "recent_directory_guard": {
+      "enabled": true,
+      "allowlist_patterns": [],
+      "blocklist_patterns": []
+    }
   },
   "plugins": [
     {

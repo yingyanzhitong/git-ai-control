@@ -229,6 +229,31 @@ def validate_policy_config(value) -> dict:
             re.compile(pattern)
         except re.error as error:
             raise ConfigError(f"无效的 Skill 正则：{pattern}（{error}）") from error
+    recent_directory_guard = skill_policy.get("recent_directory_guard", {})
+    if not isinstance(recent_directory_guard, dict):
+        raise ConfigError("新目录观察期配置必须是对象")
+    recent_directory_guard_enabled = recent_directory_guard.get("enabled", True)
+    if not isinstance(recent_directory_guard_enabled, bool):
+        raise ConfigError("新目录观察期开关必须是布尔值")
+    recent_directory_allowlist = validate_string_list(
+        recent_directory_guard.get("allowlist_patterns", []),
+        "新目录观察期白名单",
+        maximum=256,
+    )
+    recent_directory_blocklist = validate_string_list(
+        recent_directory_guard.get("blocklist_patterns", []),
+        "新目录观察期黑名单",
+        maximum=256,
+    )
+    for label, patterns in (
+        ("新目录观察期白名单", recent_directory_allowlist),
+        ("新目录观察期黑名单", recent_directory_blocklist),
+    ):
+        for pattern in patterns:
+            try:
+                re.compile(pattern)
+            except re.error as error:
+                raise ConfigError(f"无效的{label}正则：{pattern}（{error}）") from error
 
     plugins = value.get("plugins")
     if not isinstance(plugins, list) or len(plugins) > 32:
@@ -392,6 +417,11 @@ def validate_policy_config(value) -> dict:
             "installed": skill_installed,
             "enabled": skill_enabled,
             "blocked_patterns": blocked_patterns,
+            "recent_directory_guard": {
+                "enabled": recent_directory_guard_enabled,
+                "allowlist_patterns": recent_directory_allowlist,
+                "blocklist_patterns": recent_directory_blocklist,
+            },
         },
         "plugins": normalized_plugins,
         "plugin_order": plugin_order,
