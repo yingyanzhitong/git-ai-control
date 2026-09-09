@@ -1,0 +1,46 @@
+static/assets/index-CYcJ5cdw.css
+  s_c94d37d3dcad25::t_7a61b9e39891fa 2
+static/assets/index-Cg5ATcom.js
+  s_c94d37d3dcad25::t_6a84b15fe50275 1,8-10,14,27,31,35,39,43-44,46,49-50
+static/index.html
+  s_c94d37d3dcad25::t_6888f91d9356ec 8-9
+CHANGELOG.md
+  s_c94d37d3dcad25::t_bf889c7fe36aaa 5-11
+README.zh-CN.md
+  s_c94d37d3dcad25::t_d2b57af84350ac 98-99
+frontend/git-ai-control-panel/package-lock.json
+  s_c94d37d3dcad25::t_a397db363d83f3 3,9
+frontend/git-ai-control-panel/package.json
+  s_c94d37d3dcad25::t_87a28cd178d88f 4-5
+frontend/git-ai-control-panel/src/App.tsx
+  s_c94d37d3dcad25::t_dd7694439429e1 194-206,357-365,585-587,657-672,679-686,691,989-1029,1500-1587
+package-lock.json
+  s_c94d37d3dcad25::t_aefc25f4ce60a6 3,9
+package.json
+  s_c94d37d3dcad25::t_39a6b32b19fe35 3
+plugins/upload-filter/plugin_filter_runtime.py
+  s_c94d37d3dcad25::t_be3a65e323af0e 724-739,748-751,756,763,815-818,824-825,828-830
+server.py
+  s_c94d37d3dcad25::t_093b4fc83eca94 33,35,702-785,893-895,941-962
+tests/test_server_policy.py
+  s_c94d37d3dcad25::t_7d7926416a08b1 171-211
+tests/test_upload_filter_runtime.py
+  s_c94d37d3dcad25::t_038186b8cf7f37 143,155-157
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "f9d4128be600217154037b69d2e66c5d81c0f220",
+  "prompts": {},
+  "logical_commit_id": "f9d4128be600217154037b69d2e66c5d81c0f220",
+  "sessions": {
+    "s_c94d37d3dcad25": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a07a12-2d6d-7c63-a5d7-3220465c6cdb",
+        "model": "gpt-5.6-terra"
+      },
+      "human_author": "yingyanzhitong <yingyanzhitong@users.noreply.github.com>"
+    }
+  }
+}
