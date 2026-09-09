@@ -140,6 +140,7 @@ class UploadFilterRuntimeTests(unittest.TestCase):
                     now=now,
                     state_path=state_path,
                 )
+                state = json.loads(state_path.read_text(encoding="utf-8"))
                 released = RUNTIME.recent_directory_skill_guard(
                     {"cwd": directory, "skillName": "floorplan-digitization"},
                     policy["skill_policy"],
@@ -151,6 +152,9 @@ class UploadFilterRuntimeTests(unittest.TestCase):
 
         self.assertEqual(first, "recent_directory_skill_hold")
         self.assertIsNone(released)
+        hold = next(iter(state["holds"].values()))
+        self.assertEqual(hold["skill"], "floorplan-digitization")
+        self.assertEqual(hold["directory"], str(Path(directory).resolve()))
 
     def test_recent_directory_skill_allowlist_bypasses_hold_and_blocklist_wins(self):
         policy = RUNTIME.clone_default_policy()

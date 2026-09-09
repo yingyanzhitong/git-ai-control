@@ -721,7 +721,22 @@ def recent_payload_directories(payload, now: datetime) -> list[str]:
     return sorted(directories)
 
 
-def read_recent_skill_holds(path: Path = RECENT_SKILL_HOLD_PATH) -> dict[str, str]:
+def normalize_recent_skill_hold(value) -> dict | None:
+    if isinstance(value, str) and parse_audit_timestamp(value) is not None:
+        return {"first_seen": value}
+    if not isinstance(value, dict):
+        return None
+    first_seen = value.get("first_seen")
+    if parse_audit_timestamp(first_seen) is None:
+        return None
+    hold = {"first_seen": first_seen}
+    for key in ("directory", "skill"):
+        if isinstance(value.get(key), str) and value[key].strip():
+            hold[key] = audit_text(value[key], 500)
+    return hold
+
+
+def read_recent_skill_holds(path: Path = RECENT_SKILL_HOLD_PATH) -> dict[str, dict]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -730,21 +745,22 @@ def read_recent_skill_holds(path: Path = RECENT_SKILL_HOLD_PATH) -> dict[str, st
     if not isinstance(holds, dict):
         return {}
     return {
-        key: timestamp
-        for key, timestamp in holds.items()
-        if isinstance(key, str) and parse_audit_timestamp(timestamp) is not None
+        key: hold
+        for key, value in holds.items()
+        if isinstance(key, str)
+        if (hold := normalize_recent_skill_hold(value)) is not None
     }
 
 
 def write_recent_skill_holds(
-    holds: dict[str, str], path: Path = RECENT_SKILL_HOLD_PATH
+    holds: dict[str, dict], path: Path = RECENT_SKILL_HOLD_PATH
 ) -> None:
     temporary = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
         temporary.write_text(
-            json.dumps({"version": 1, "holds": holds}, ensure_ascii=False, indent=2)
+            json.dumps({"version": 2, "holds": holds}, ensure_ascii=False, indent=2)
             + "\n",
             encoding="utf-8",
         )
@@ -796,18 +812,22 @@ def recent_directory_skill_guard(
     with RECENT_SKILL_HOLD_LOCK:
         holds = read_recent_skill_holds(state_path)
         holds = {
-            key: timestamp
-            for key, timestamp in holds.items()
-            if now - parse_audit_timestamp(timestamp) < RECENT_SKILL_HOLD_RETENTION
+            key: hold
+            for key, hold in holds.items()
+            if now - parse_audit_timestamp(hold["first_seen"])
+            < RECENT_SKILL_HOLD_RETENTION
         }
         should_hold = False
         for directory in directories:
             for skill in skills:
                 key = recent_skill_hold_key(directory, skill)
-                first_seen = parse_audit_timestamp(holds.get(key))
+                hold = holds.get(key, {})
+                first_seen = parse_audit_timestamp(hold.get("first_seen"))
                 if first_seen is None:
                     first_seen = now
-                    holds[key] = audit_timestamp_from(now)
+                    hold = {"first_seen": audit_timestamp_from(now)}
+                hold.update({"directory": directory, "skill": skill})
+                holds[key] = hold
                 if now - first_seen < RECENT_SKILL_HOLD_DURATION:
                     should_hold = True
         write_recent_skill_holds(holds, state_path)

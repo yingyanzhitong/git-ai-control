@@ -168,6 +168,47 @@ class ServerPolicyTests(unittest.TestCase):
 
         self.assertEqual(version, "0.4.14")
 
+    def test_lists_and_resolves_recent_skill_hold(self):
+        now = datetime(2026, 9, 9, 12, tzinfo=timezone.utc)
+        hold_id = "a" * 64
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            holds_path = root / "recent_skill_holds.json"
+            policy_path = root / "filter_plugins.json"
+            holds_path.write_text(
+                json.dumps(
+                    {
+                        "version": 2,
+                        "holds": {
+                            hold_id: {
+                                "first_seen": "2026-09-09T11:00:00Z",
+                                "skill": "floorplan-digitization",
+                                "directory": "/Users/example/workplace/floorplan",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            policy_path.write_text(json.dumps(example_policy()), encoding="utf-8")
+            original_holds_path = SERVER.RECENT_SKILL_HOLD_PATH
+            original_policy_path = SERVER.POLICY_CONFIG_PATH
+            try:
+                SERVER.RECENT_SKILL_HOLD_PATH = holds_path
+                SERVER.POLICY_CONFIG_PATH = policy_path
+                holds = SERVER.recent_skill_holds(now)
+                policy = SERVER.resolve_recent_skill_hold(hold_id, "allow")
+            finally:
+                SERVER.RECENT_SKILL_HOLD_PATH = original_holds_path
+                SERVER.POLICY_CONFIG_PATH = original_policy_path
+
+        self.assertEqual(holds[0]["skill"], "floorplan-digitization")
+        self.assertEqual(holds[0]["remainingSeconds"], 23 * 60 * 60)
+        self.assertIn(
+            "^floorplan\\-digitization$",
+            policy["skill_policy"]["recent_directory_guard"]["allowlist_patterns"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

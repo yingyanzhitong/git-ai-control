@@ -191,6 +191,19 @@ type FilterAuditResponse = {
   events: FilterAuditEvent[]
 }
 
+type RecentSkillHold = {
+  id: string
+  skill: string
+  directory: string
+  firstSeen: string
+  expiresAt: string
+  remainingSeconds: number
+}
+
+type RecentSkillHoldsResponse = {
+  holds: RecentSkillHold[]
+}
+
 type FilterAuditSummary = {
   name: string
   count: number
@@ -341,6 +354,15 @@ function formatUpdatedAt(value: string, locale: Locale, unknownLabel: string) {
     hour: "2-digit",
     minute: "2-digit",
   }).format(time)
+}
+
+function formatRemainingTime(seconds: number, t: (source: string, values?: Record<string, string | number>) => string) {
+  const minutes = Math.max(0, Math.ceil(seconds / 60))
+  if (minutes < 60) return t("剩余 {{minutes}} 分钟", {minutes})
+  return t("剩余 {{hours}} 小时 {{minutes}} 分钟", {
+    hours: Math.floor(minutes / 60),
+    minutes: minutes % 60,
+  })
 }
 
 function formatFilterReason(reason: string, t: (source: string) => string) {
@@ -560,6 +582,9 @@ export function App() {
   const [filterEvents, setFilterEvents] = useState<FilterAuditEvent[]>([])
   const [filterEventsLoading, setFilterEventsLoading] = useState(false)
   const [filterEventsError, setFilterEventsError] = useState("")
+  const [recentSkillHolds, setRecentSkillHolds] = useState<RecentSkillHold[]>([])
+  const [recentSkillHoldsLoading, setRecentSkillHoldsLoading] = useState(false)
+  const [recentSkillHoldsError, setRecentSkillHoldsError] = useState("")
   const [dirty, setDirty] = useState(false)
   const [busy, setBusy] = useState(false)
   const [addPluginOpen, setAddPluginOpen] = useState(false)
@@ -629,19 +654,41 @@ export function App() {
     }
   }, [t])
 
+  const loadRecentSkillHolds = useCallback(async () => {
+    setRecentSkillHoldsLoading(true)
+    try {
+      const response = await fetch("/api/recent-skill-holds", {cache: "no-store"})
+      const payload = await readResponse<RecentSkillHoldsResponse>(response)
+      setRecentSkillHolds(Array.isArray(payload.holds) ? payload.holds : [])
+      setRecentSkillHoldsError("")
+    } catch (error) {
+      setRecentSkillHoldsError(
+        error instanceof Error ? error.message : t("读取观察期列表失败"),
+      )
+    } finally {
+      setRecentSkillHoldsLoading(false)
+    }
+  }, [t])
+
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => void loadConfig())
     return () => window.cancelAnimationFrame(frame)
   }, [loadConfig])
 
   useEffect(() => {
-    const frame = window.requestAnimationFrame(() => void loadFilterEvents())
-    const interval = window.setInterval(() => void loadFilterEvents(), 30_000)
+    const frame = window.requestAnimationFrame(() => {
+      void loadFilterEvents()
+      void loadRecentSkillHolds()
+    })
+    const interval = window.setInterval(() => {
+      void loadFilterEvents()
+      void loadRecentSkillHolds()
+    }, 30_000)
     return () => {
       window.cancelAnimationFrame(frame)
       window.clearInterval(interval)
     }
-  }, [loadFilterEvents])
+  }, [loadFilterEvents, loadRecentSkillHolds])
 
   const enabledPlugins = useMemo(
     () => policy?.plugins.filter((plugin) => plugin.enabled) ?? [],
@@ -939,6 +986,47 @@ export function App() {
       toast.success(t("配置已保存，下一次上报立即使用新策略"))
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t("保存失败"))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const resolveRecentSkillHold = async (
+    hold: RecentSkillHold,
+    action: "allow" | "block",
+  ) => {
+    if (dirty) {
+      toast.error(t("请先保存当前配置，再处理观察期 Skill"))
+      return
+    }
+    setBusy(true)
+    try {
+      const response = await fetch(
+        `/api/recent-skill-holds/${hold.id}/${action}`,
+        {method: "POST"},
+      )
+      const payload = await readResponse<{
+        message?: string
+        policy: PolicyConfig
+        holds: RecentSkillHold[]
+      }>(response)
+      const nextPolicy = normalizePolicy(payload.policy)
+      setPolicy(nextPolicy)
+      setSkillBlockedPatternsText(
+        toLines(nextPolicy.skill_policy.blocked_patterns),
+      )
+      setRecentDirectoryAllowlistText(
+        toLines(nextPolicy.skill_policy.recent_directory_guard.allowlist_patterns),
+      )
+      setRecentDirectoryBlocklistText(
+        toLines(nextPolicy.skill_policy.recent_directory_guard.blocklist_patterns),
+      )
+      setRecentSkillHolds(Array.isArray(payload.holds) ? payload.holds : [])
+      toast.success(payload.message || t("观察期 Skill 已处理"), {
+        description: hold.skill,
+      })
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t("处理观察期 Skill 失败"))
     } finally {
       setBusy(false)
     }
@@ -1409,6 +1497,94 @@ export function App() {
                     </div>
                   )}
                   <p className="text-xs text-muted-foreground">{t("记录仅保存在本机 24 小时，包含时间、仓库或 Skill 标识及拦截原因，不保存上报正文。")}</p>
+                </CardContent>
+              </Card>
+
+              <Card className="overflow-hidden">
+                <CardHeader className="gap-4 border-b bg-muted/30 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="space-y-2">
+                    <Badge variant="secondary">
+                      <ShieldAlert />{t("新目录观察期")}</Badge>
+                    <div>
+                      <CardTitle>{t("扣留中的 Skills")}</CardTitle>
+                      <CardDescription>
+                        {t("在 24 小时内选择立即放行或加入黑名单；列表每 30 秒自动刷新。")}
+                      </CardDescription>
+                    </div>
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void loadRecentSkillHolds()}
+                    disabled={recentSkillHoldsLoading}
+                  >
+                    <RefreshCw
+                      className={recentSkillHoldsLoading ? "animate-spin" : undefined}
+                    />{t("刷新列表")}</Button>
+                </CardHeader>
+                <CardContent className="pt-6">
+                  {recentSkillHoldsError ? (
+                    <div className="rounded-lg border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+                      {t("无法读取观察期列表：")}{recentSkillHoldsError}
+                    </div>
+                  ) : recentSkillHolds.length ? (
+                    <div className="divide-y overflow-hidden rounded-lg border bg-background">
+                      {recentSkillHolds.map((hold) => (
+                        <div
+                          key={hold.id}
+                          className="flex flex-col gap-4 px-4 py-4 sm:flex-row sm:items-center sm:justify-between"
+                        >
+                          <div className="min-w-0 space-y-1">
+                            <p className="font-mono text-sm font-medium">{hold.skill}</p>
+                            <p className="truncate font-mono text-xs text-muted-foreground">
+                              {hold.directory}
+                            </p>
+                            <p className="text-xs text-muted-foreground">
+                              {t("首次拦截：")} {formatAuditTime(hold.firstSeen, locale, t("时间未知"))} · {formatRemainingTime(hold.remainingSeconds, t)}
+                            </p>
+                          </div>
+                          <div className="flex shrink-0 flex-wrap gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={busy || dirty}
+                              onClick={() => void resolveRecentSkillHold(hold, "allow")}
+                            >{t("立即放行")}</Button>
+                            <AlertDialog>
+                              <AlertDialogTrigger asChild>
+                                <Button size="sm" variant="destructive" disabled={busy || dirty}>
+                                  {t("加入黑名单")}
+                                </Button>
+                              </AlertDialogTrigger>
+                              <AlertDialogContent>
+                                <AlertDialogHeader>
+                                  <AlertDialogTitle>{t("将 Skill 加入黑名单？")}</AlertDialogTitle>
+                                  <AlertDialogDescription>
+                                    {t("{{skill}} 的后续上报将持续被拦截，不再受 24 小时观察期限制。", {skill: hold.skill})}
+                                  </AlertDialogDescription>
+                                </AlertDialogHeader>
+                                <AlertDialogFooter>
+                                  <AlertDialogCancel>{t("取消")}</AlertDialogCancel>
+                                  <AlertDialogAction onClick={() => void resolveRecentSkillHold(hold, "block")}>
+                                    {t("确认加入")}
+                                  </AlertDialogAction>
+                                </AlertDialogFooter>
+                              </AlertDialogContent>
+                            </AlertDialog>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="rounded-lg border border-dashed px-4 py-8 text-center text-sm text-muted-foreground">
+                      {t("当前没有处于观察期的 Skill")}
+                    </p>
+                  )}
+                  {dirty && (
+                    <p className="mt-3 text-xs text-muted-foreground">
+                      {t("请先保存页面中的配置，随后才能处理观察期队列。")}
+                    </p>
+                  )}
                 </CardContent>
               </Card>
 

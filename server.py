@@ -30,7 +30,9 @@ POLICY_CONFIG_PATH = GIT_AI_ROOT / "filter_plugins.json"
 CUSTOM_METRICS_PATH = GIT_AI_ROOT / "custom_metrics.json"
 FILTER_SCRIPT_PATH = GIT_AI_ROOT / "filters" / "plugin_filter_runtime.py"
 FILTER_AUDIT_PATH = GIT_AI_ROOT / "filter_audit.jsonl"
+RECENT_SKILL_HOLD_PATH = GIT_AI_ROOT / "recent_skill_holds.json"
 FILTER_AUDIT_RETENTION = timedelta(hours=24)
+RECENT_SKILL_HOLD_DURATION = timedelta(hours=24)
 FILTER_HEALTH_URL = "http://127.0.0.1:38741/health"
 FILTER_MAC_LABEL = "com.git-ai.skill-usage-filter"
 FILTER_LINUX_UNIT = "git-ai-filter.service"
@@ -697,6 +699,90 @@ def read_filter_audit_events(now: datetime | None = None) -> tuple[str, list[dic
     )
 
 
+def parse_utc_timestamp(value) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(timezone.utc)
+
+
+def recent_skill_holds(now: datetime | None = None) -> list[dict]:
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now = now.astimezone(timezone.utc)
+    raw = read_json(RECENT_SKILL_HOLD_PATH, {})
+    raw_holds = raw.get("holds", {}) if isinstance(raw, dict) else {}
+    if not isinstance(raw_holds, dict):
+        return []
+
+    holds = []
+    for key, value in raw_holds.items():
+        if not isinstance(key, str) or not isinstance(value, dict):
+            continue
+        skill = value.get("skill")
+        directory = value.get("directory")
+        first_seen = parse_utc_timestamp(value.get("first_seen"))
+        if (
+            not isinstance(skill, str)
+            or not skill.strip()
+            or not isinstance(directory, str)
+            or not directory.strip()
+            or first_seen is None
+        ):
+            continue
+        expires_at = first_seen + RECENT_SKILL_HOLD_DURATION
+        if expires_at <= now:
+            continue
+        holds.append(
+            {
+                "id": key,
+                "skill": skill[:160],
+                "directory": directory[:500],
+                "firstSeen": first_seen.isoformat(timespec="seconds").replace("+00:00", "Z"),
+                "expiresAt": expires_at.isoformat(timespec="seconds").replace("+00:00", "Z"),
+                "remainingSeconds": max(0, int((expires_at - now).total_seconds())),
+            }
+        )
+    return sorted(holds, key=lambda hold: hold["expiresAt"])
+
+
+def resolve_recent_skill_hold(hold_id: str, action: str) -> dict:
+    if not re.fullmatch(r"[a-f0-9]{64}", hold_id):
+        raise ConfigError("观察期记录不存在")
+    target = {
+        "allow": "allowlist_patterns",
+        "block": "blocklist_patterns",
+    }.get(action)
+    if target is None:
+        raise ConfigError("观察期操作无效")
+
+    raw_holds = read_json(RECENT_SKILL_HOLD_PATH, {})
+    holds = raw_holds.get("holds", {}) if isinstance(raw_holds, dict) else {}
+    hold = holds.get(hold_id) if isinstance(holds, dict) else None
+    skill = hold.get("skill") if isinstance(hold, dict) else None
+    if not isinstance(skill, str) or not skill.strip():
+        raise ConfigError("观察期记录已过期或无法处理")
+
+    policy = validate_policy_config(read_json(POLICY_CONFIG_PATH, {}))
+    patterns = policy["skill_policy"]["recent_directory_guard"][target]
+    exact_pattern = f"^{re.escape(skill)}$"
+    if exact_pattern not in patterns:
+        patterns.append(exact_pattern)
+    atomic_write_json(POLICY_CONFIG_PATH, policy)
+
+    holds.pop(hold_id, None)
+    raw_holds["version"] = 2
+    raw_holds["holds"] = holds
+    atomic_write_json(RECENT_SKILL_HOLD_PATH, raw_holds)
+    return policy
+
+
 def run_self_test() -> dict:
     checks = []
     try:
@@ -805,6 +891,9 @@ class Handler(BaseHTTPRequestHandler):
             since, events = read_filter_audit_events()
             self.send_json(200, {"since": since, "events": events})
             return
+        if path == "/api/recent-skill-holds":
+            self.send_json(200, {"holds": recent_skill_holds()})
+            return
         self.serve_static(path)
 
     def do_PUT(self):
@@ -849,6 +938,28 @@ class Handler(BaseHTTPRequestHandler):
                     "message": "过滤服务已重启" if result.returncode == 0 else result.stderr.strip(),
                 },
             )
+            return
+        hold_match = re.fullmatch(
+            r"/api/recent-skill-holds/([a-f0-9]{64})/(allow|block)", path
+        )
+        if hold_match:
+            try:
+                policy = resolve_recent_skill_hold(
+                    hold_match.group(1), hold_match.group(2)
+                )
+                self.send_json(
+                    200,
+                    {
+                        "ok": True,
+                        "message": "已加入白名单" if hold_match.group(2) == "allow" else "已加入黑名单",
+                        "policy": policy,
+                        "holds": recent_skill_holds(),
+                    },
+                )
+            except ConfigError as error:
+                self.send_json(400, {"ok": False, "message": str(error)})
+            except Exception as error:
+                self.send_json(500, {"ok": False, "message": f"处理失败：{error}"})
             return
         self.send_json(404, {"ok": False, "message": "接口不存在"})
 
