@@ -5,7 +5,11 @@ import path from "node:path"
 import test from "node:test"
 import {fileURLToPath} from "node:url"
 
-import {controlPanelIsRunning} from "../scripts/install.mjs"
+import {
+  controlPanelIsRunning,
+  controlPanelNeedsUpdate,
+  controlPanelStatus,
+} from "../scripts/install.mjs"
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 
@@ -30,7 +34,19 @@ test("仅复用可识别的配置中心服务", async (t) => {
     await controlPanelIsRunning(`http://127.0.0.1:${port}/api/status`),
     true,
   )
+  assert.deepEqual(
+    await controlPanelStatus(`http://127.0.0.1:${port}/api/status`),
+    {distribution: "custom-metrics", gitAiStatus: "enabled"},
+  )
   assert.equal(await controlPanelIsRunning(`http://127.0.0.1:${port}/other`), false)
+})
+
+test("仅在可用版本高于已安装版本时升级", () => {
+  assert.equal(controlPanelNeedsUpdate(undefined, "0.4.14"), true)
+  assert.equal(controlPanelNeedsUpdate("0.4.13", "0.4.14"), true)
+  assert.equal(controlPanelNeedsUpdate("0.4.14", "0.4.14"), false)
+  assert.equal(controlPanelNeedsUpdate("0.4.15", "0.4.14"), false)
+  assert.equal(controlPanelNeedsUpdate("0.5.0", "0.4.14"), false)
 })
 
 test("不再支持 start 子命令", () => {

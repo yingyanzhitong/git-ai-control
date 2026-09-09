@@ -155,6 +155,19 @@ class ServerPolicyTests(unittest.TestCase):
 
         self.assertEqual(updated_at, "2026-08-12T04:08:00Z")
 
+    def test_reads_installed_control_panel_version(self):
+        with TemporaryDirectory() as directory:
+            version_path = Path(directory) / "runtime.json"
+            version_path.write_text('{"version":"0.4.14"}\n', encoding="utf-8")
+            original_path = SERVER.CONTROL_PANEL_RUNTIME_PATH
+            try:
+                SERVER.CONTROL_PANEL_RUNTIME_PATH = version_path
+                version = SERVER.control_panel_version()
+            finally:
+                SERVER.CONTROL_PANEL_RUNTIME_PATH = original_path
+
+        self.assertEqual(version, "0.4.14")
+
 
 if __name__ == "__main__":
     unittest.main()

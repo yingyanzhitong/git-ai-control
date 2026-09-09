@@ -1,7 +1,8 @@
 {
   "name": "git-ai-control",
-  "version": "0.4.13",
+  "version": "0.4.14",
   "description": "Git AI 本地配置与上传隐私控制面板",
+  "author": "yingyanzhitong",
   "type": "module",
   "bin": {
     "git-ai-control": "bin/git-ai-control.js"

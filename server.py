@@ -35,6 +35,7 @@ FILTER_HEALTH_URL = "http://127.0.0.1:38741/health"
 FILTER_MAC_LABEL = "com.git-ai.skill-usage-filter"
 FILTER_LINUX_UNIT = "git-ai-filter.service"
 FILTER_WINDOWS_TASK = "GitAIFilter"
+CONTROL_PANEL_RUNTIME_PATH = APP_ROOT / "runtime.json"
 
 NATIVE_FIELDS = {
     "git_path",
@@ -564,6 +565,12 @@ def git_ai_updated_at() -> str:
         return ""
 
 
+def control_panel_version() -> str:
+    metadata = read_json(CONTROL_PANEL_RUNTIME_PATH, {})
+    version = metadata.get("version") if isinstance(metadata, dict) else ""
+    return version if isinstance(version, str) else ""
+
+
 @lru_cache(maxsize=1)
 def custom_metrics_supported() -> bool:
     binary = git_ai_binary_path()
@@ -627,6 +634,7 @@ def runtime_status() -> dict:
         "platform": platform.system().lower(),
         "gitAiVersion": git_ai_version(),
         "gitAiUpdatedAt": git_ai_updated_at(),
+        "controlPanelVersion": control_panel_version(),
         "paths": {
             "nativeConfig": str(NATIVE_CONFIG_PATH),
             "policyConfig": str(POLICY_CONFIG_PATH),

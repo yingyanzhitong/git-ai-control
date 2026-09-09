@@ -42,6 +42,14 @@ const ROUTE_KEYS = {
 }
 const CONTROL_PANEL_STATUS_URL = "http://127.0.0.1:38742/api/status"
 
+function packageVersion() {
+  const metadata = readJson(path.join(PROJECT_ROOT, "package.json"), {})
+  if (typeof metadata.version !== "string" || !metadata.version.trim()) {
+    throw new Error("无法识别当前 git-ai-control 版本")
+  }
+  return metadata.version.trim()
+}
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     encoding: "utf8",
@@ -207,7 +215,7 @@ function configureCustomMetrics(gitAiRoot) {
   writeJsonAtomic(metricsPath, {...config, ...LOCAL_ENDPOINTS})
 }
 
-function copyRuntime(gitAiRoot) {
+function copyRuntime(gitAiRoot, version) {
   const controlPanelDir = path.join(gitAiRoot, "control-panel")
   const filterDir = path.join(gitAiRoot, "filters")
   fs.mkdirSync(controlPanelDir, {recursive: true})
@@ -224,6 +232,7 @@ function copyRuntime(gitAiRoot) {
   fs.cpSync(path.join(PROJECT_ROOT, "static"), path.join(controlPanelDir, "static"), {
     recursive: true,
   })
+  writeJsonAtomic(path.join(controlPanelDir, "runtime.json"), {version})
   if (process.platform !== "win32") {
     fs.chmodSync(path.join(controlPanelDir, "server.py"), 0o700)
     fs.chmodSync(path.join(filterDir, "plugin_filter_runtime.py"), 0o700)
@@ -387,13 +396,13 @@ async function waitForHttp(url, label) {
   throw new Error(`${label}启动失败：${url}`)
 }
 
-export async function controlPanelIsRunning(url = CONTROL_PANEL_STATUS_URL) {
+export async function controlPanelStatus(url = CONTROL_PANEL_STATUS_URL) {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 1_500)
   try {
     const response = await fetch(url, {signal: controller.signal})
     if (!response.ok) {
-      return false
+      return null
     }
     const status = await response.json()
     return (
@@ -401,12 +410,37 @@ export async function controlPanelIsRunning(url = CONTROL_PANEL_STATUS_URL) {
       typeof status === "object" &&
       typeof status.distribution === "string" &&
       typeof status.gitAiStatus === "string"
-    )
+    ) ? status : null
   } catch {
-    return false
+    return null
   } finally {
     clearTimeout(timeout)
   }
+}
+
+export async function controlPanelIsRunning(url = CONTROL_PANEL_STATUS_URL) {
+  return Boolean(await controlPanelStatus(url))
+}
+
+export function controlPanelNeedsUpdate(installedVersion, packageVersion) {
+  if (typeof installedVersion !== "string" || !installedVersion.trim()) {
+    return true
+  }
+  const parseVersion = (value) => {
+    const match = value.trim().match(/^(\d+)\.(\d+)\.(\d+)$/)
+    return match ? match.slice(1).map(Number) : null
+  }
+  const installed = parseVersion(installedVersion)
+  const available = parseVersion(packageVersion)
+  if (!installed || !available) {
+    return false
+  }
+  for (let index = 0; index < available.length; index += 1) {
+    if (available[index] !== installed[index]) {
+      return available[index] > installed[index]
+    }
+  }
+  return false
 }
 
 export async function install(options = {}) {
@@ -418,6 +452,7 @@ export async function install(options = {}) {
     options.gitAiRoot ?? process.env.GIT_AI_ROOT ?? path.join(os.homedir(), ".git-ai"),
   )
   const pythonCommand = options.pythonCommand ?? findPython(platform)
+  const version = packageVersion()
   const binary = gitAiBinaryCandidates(gitAiRoot, platform).find(fs.existsSync)
   if (!binary) {
     throw new Error(
@@ -459,7 +494,7 @@ export async function install(options = {}) {
     console.log("检测到官方上游版：保留原生配置管理，不修改无效的 custom_metrics.json")
   }
 
-  copyRuntime(gitAiRoot)
+  copyRuntime(gitAiRoot, version)
   run(pythonCommand[0], [
     ...pythonCommand.slice(1),
     "-m",

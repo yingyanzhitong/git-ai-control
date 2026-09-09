@@ -1,15 +1,19 @@
 #!/usr/bin/env node
 
 import {spawnSync} from "node:child_process"
+import fs from "node:fs"
 import path from "node:path"
 import {fileURLToPath} from "node:url"
 
 import {browserCommand} from "../scripts/platform-services.mjs"
-import {controlPanelIsRunning} from "../scripts/install.mjs"
+import {controlPanelNeedsUpdate, controlPanelStatus} from "../scripts/install.mjs"
 
 const command = process.argv[2]
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const controlPanelUrl = "http://127.0.0.1:38742"
+const packageVersion = JSON.parse(
+  fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"),
+).version
 
 function printHelp() {
   console.log(`Git AI Control Panel
@@ -37,8 +41,14 @@ try {
     await uninstall()
     process.exit(0)
   }
-  const reused = await controlPanelIsRunning()
-  if (!reused) {
+  const status = await controlPanelStatus()
+  if (!status) {
+    const {install} = await import("../scripts/install.mjs")
+    await install()
+  } else if (controlPanelNeedsUpdate(status.controlPanelVersion, packageVersion)) {
+    console.log(
+      `检测到新版本 ${packageVersion}，正在从 ${status.controlPanelVersion || "旧版"} 更新并重启服务`,
+    )
     const {install} = await import("../scripts/install.mjs")
     await install()
   } else {
