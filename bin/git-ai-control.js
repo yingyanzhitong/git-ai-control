@@ -6,7 +6,7 @@ import path from "node:path"
 import {fileURLToPath} from "node:url"
 
 import {browserCommand} from "../scripts/platform-services.mjs"
-import {controlPanelNeedsUpdate, controlPanelStatus} from "../scripts/install.mjs"
+import {controlPanelNeedsUpdate, controlPanelStatus, ensureAutoStart} from "../scripts/install.mjs"
 
 const command = process.argv[2]
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
@@ -52,6 +52,10 @@ try {
     const {install} = await import("../scripts/install.mjs")
     await install()
   } else {
+    const changed = ensureAutoStart({
+      gitAiRoot: status.paths?.nativeConfig ? path.dirname(status.paths.nativeConfig) : undefined,
+    })
+    console.log(changed ? "已自动补齐重启后启动配置" : "重启后自动启动配置已就绪")
     console.log("检测到已运行的 Git AI 配置中心，复用现有进程")
   }
 } catch (error) {

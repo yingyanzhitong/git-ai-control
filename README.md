@@ -56,6 +56,10 @@ http://127.0.0.1:38742
 
 The installer detects whether Git AI supports `custom_metrics`, backs up original reporting endpoints for the current user only, keeps existing `config.json` and `filter_plugins.json`, installs the control page and filter runtime, and waits for both local health checks.
 
+Every `npx git-ai-control` run checks automatic startup, including when reusing running services. Missing entries are created and disabled entries are re-enabled. Ready configurations are reused without restarting active services.
+
+Automatic startup is enabled by default: after restarting the computer and signing in, the control center and filter service run in the background without rerunning the command. On macOS, installation also re-enables previously disabled launch agents. Git AI's enabled or paused state and plugin policies are preserved.
+
 | OS | Service manager | Requirement |
 | --- | --- | --- |
 | macOS | LaunchAgent | Current graphical user session |

@@ -327,6 +327,7 @@ function startServices(platform, gitAiRoot) {
         "LaunchAgents",
         `${service.macLabel}.plist`,
       )
+      run("launchctl", ["enable", `${domain}/${service.macLabel}`])
       run("launchctl", ["bootstrap", domain, plist])
     }
     return
@@ -358,6 +359,81 @@ function startServices(platform, gitAiRoot) {
     return
   }
   throw new Error(`不支持当前操作系统：${platform}`)
+}
+
+export function ensureAutoStart(options = {}) {
+  const platform = options.platform ?? process.platform
+  const home = options.home ?? os.homedir()
+  const gitAiRoot = path.resolve(options.gitAiRoot ?? process.env.GIT_AI_ROOT ?? path.join(home, ".git-ai"))
+  const execute = options.run ?? run
+  const pythonCommand = () => options.pythonCommand ?? findPython(platform)
+  const query = (command, args) => execute(command, args, {capture: true, allowFailure: true})
+  let changed = false
+
+  if (platform === "darwin") {
+    const domain = `gui/${options.uid ?? process.getuid()}`
+    const disabled = query("launchctl", ["print-disabled", domain])
+    if (disabled.error || disabled.status !== 0) {
+      throw new Error("无法检查 macOS 自动启动状态")
+    }
+    const directory = path.join(home, "Library", "LaunchAgents")
+    fs.mkdirSync(directory, {recursive: true})
+    for (const service of SERVICE_DEFINITIONS) {
+      const target = path.join(directory, `${service.macLabel}.plist`)
+      const existing = fs.existsSync(target) ? fs.readFileSync(target, "utf8") : ""
+      if (!/<key>RunAtLoad<\/key>\s*<true\s*\/>/.test(existing)) {
+        fs.writeFileSync(target, renderLaunchAgent(service, gitAiRoot, pythonCommand()), {mode: 0o600})
+        changed = true
+      }
+      if (String(disabled.stdout).split(/\r?\n/).some((line) =>
+        line.trim().startsWith(`"${service.macLabel}" =>`) && /(?:true|disabled)\s*$/.test(line),
+      )) {
+        execute("launchctl", ["enable", `${domain}/${service.macLabel}`])
+        changed = true
+      }
+      const loaded = query("launchctl", ["print", `${domain}/${service.macLabel}`])
+      if (loaded.error || loaded.status !== 0) {
+        execute("launchctl", ["bootstrap", domain, target])
+        changed = true
+      }
+    }
+  } else if (platform === "linux") {
+    const directory = path.join(home, ".config", "systemd", "user")
+    fs.mkdirSync(directory, {recursive: true})
+    for (const service of SERVICE_DEFINITIONS) {
+      const target = path.join(directory, service.linuxUnit)
+      if (!fs.existsSync(target)) {
+        fs.writeFileSync(target, renderSystemdUnit(service, gitAiRoot, pythonCommand()))
+        changed = true
+      }
+    }
+    if (changed) execute("systemctl", ["--user", "daemon-reload"])
+    for (const service of SERVICE_DEFINITIONS) {
+      const enabled = query("systemctl", ["--user", "is-enabled", service.linuxUnit])
+      if (enabled.error || enabled.status !== 0 || enabled.stdout.trim() !== "enabled") {
+        execute("systemctl", ["--user", "enable", service.linuxUnit])
+        changed = true
+      }
+    }
+  } else if (platform === "win32") {
+    const directory = path.join(gitAiRoot, "services")
+    fs.mkdirSync(directory, {recursive: true})
+    for (const service of SERVICE_DEFINITIONS) {
+      const wrapper = path.join(directory, `${service.key}.ps1`)
+      if (!fs.existsSync(wrapper)) {
+        fs.writeFileSync(wrapper, renderWindowsWrapper(service, gitAiRoot, pythonCommand()))
+        changed = true
+      }
+      const task = query("schtasks.exe", ["/Query", "/TN", service.windowsTask, "/XML"])
+      if (task.error || task.status !== 0 || !/<LogonTrigger[\s/>]/.test(task.stdout) || /<Enabled>\s*false\s*<\/Enabled>/.test(task.stdout)) {
+        execute("schtasks.exe", ["/Create", "/F", "/SC", "ONLOGON", "/RL", "LIMITED", "/TN", service.windowsTask, "/TR", windowsTaskCommand(wrapper)])
+        changed = true
+      }
+    }
+  } else {
+    throw new Error(`不支持当前操作系统：${platform}`)
+  }
+  return changed
 }
 
 function portIsFree(port) {
@@ -511,6 +587,7 @@ export async function install(options = {}) {
   await waitForHttp(CONTROL_PANEL_STATUS_URL, "配置页面")
 
   console.log("安装完成：")
+  console.log("  重启后自动启用：登录当前用户后自动运行配置中心和过滤服务")
   console.log("  配置页面：http://127.0.0.1:38742")
   console.log("  过滤服务：http://127.0.0.1:38741/health")
   console.log(`  用户配置：${gitAiRoot}`)
