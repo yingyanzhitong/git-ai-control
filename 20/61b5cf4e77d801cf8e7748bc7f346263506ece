@@ -1,0 +1,51 @@
+frontend/git-ai-control-panel/package.json
+  s_471cf8591aa83c::t_2a5cb9c2c42c96 4-5
+CHANGELOG.md
+  s_471cf8591aa83c::t_20e7208923b3a2 7-10
+  s_471cf8591aa83c::t_2a5cb9c2c42c96 5
+  s_471cf8591aa83c::t_98cce895139397 6,11-15
+tests/autostart.test.mjs
+  s_471cf8591aa83c::t_8e84b5ce81758e 1-90
+bin/git-ai-control.js
+  s_471cf8591aa83c::t_7ce2c0413e57b5 9,55-58
+package.json
+  s_471cf8591aa83c::t_2a5cb9c2c42c96 3
+scripts/install.mjs
+  s_471cf8591aa83c::t_7ce2c0413e57b5 364-368,370-384,386-387,391-405,407-423,425-427,429-438
+  s_471cf8591aa83c::t_20e7208923b3a2 428
+  s_471cf8591aa83c::t_aeb86a1cadd2ae 369,385,388-390,406,424
+  s_471cf8591aa83c::t_5327b18ea52930 330,590
+README.md
+  s_471cf8591aa83c::t_5327b18ea52930 61-62
+  s_471cf8591aa83c::t_20e7208923b3a2 59-60
+README.zh-CN.md
+  s_471cf8591aa83c::t_5327b18ea52930 64-65
+  s_471cf8591aa83c::t_20e7208923b3a2 62-63
+frontend/git-ai-control-panel/package-lock.json
+  s_471cf8591aa83c::t_82707043dbc563 3,9
+package-lock.json
+  s_471cf8591aa83c::t_633e63e02e0434 3,9
+static/assets/index-CPuHzYIU.js
+  s_471cf8591aa83c::t_7ff55b602ab304 50
+static/index.html
+  s_471cf8591aa83c::t_41c7a679de5c1e 8
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.22",
+  "base_commit_sha": "2061b5cf4e77d801cf8e7748bc7f346263506ece",
+  "prompts": {},
+  "logical_commit_id": "2061b5cf4e77d801cf8e7748bc7f346263506ece",
+  "sessions": {
+    "s_471cf8591aa83c": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a12496-34c6-7e21-8496-efddd0806778",
+        "model": "gpt-6.1-sol"
+      },
+      "human_author": "yingyanzhitong <yingyanzhitong@users.noreply.github.com>",
+      "total_additions": 201,
+      "total_deletions": 11
+    }
+  }
+}
